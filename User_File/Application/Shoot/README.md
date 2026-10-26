@@ -44,9 +44,17 @@ Subscriber 仅在序号变化时 Read 成功，读取失败时本应用继续使
 当前代码没有“摩擦轮达速后才拨弹”的条件。
 
 `Shoot_Event_Queue` 容量为 8，保存 ShootOnce/ShootTriple，必须经 RobotCmd 的事件接口提交。
-STOP 每周期最多取一个事件，首次从反馈累计角起步，后续在目标上增加 1 或 3 个弹位。
+拨弹盘稳定 ready 后，STOP 每周期最多取一个事件，首次从反馈累计角起步，后续在目标上增加 1 或 3 个弹位。
 事件被取出仅表示已累加逻辑目标，不表示电机到位或弹丸已发射；事件可以在前一发尚未到位时继续累加。
-BURST/REVERSE 不消费队列，积压事件会留到再次进入 STOP；OFF 按开始时的队列长度有界清理。
+正常 ready 时 BURST/REVERSE 不消费队列，积压事件会留到再次进入 STOP。
+OFF、初始化失败、拨弹盘未 ready，以及首次恢复 ready 的周期，均按队列长度有界清空事件，
+取消事件角度保持并清除旧角目标。恢复首周期也清队列，以丢弃上次检查后、恢复前进入的请求。
+其后的新单发/三连发事件从当前反馈角开始；不需要额外切换总开关，旧请求不会自动补执行。
+首次上电和 OFF→ON 同样遵循此规则；生产者应在就绪后重新提交事件，不应自动重放被丢弃的请求。
+`RobotCmd_PushShootEvent()` 成功仍只表示入队，不保证请求会被执行。
+
+该恢复规则针对离散动作。BURST/REVERSE 仍是持续命令：驱动未 ready 时保护输出，
+恢复后按仍有效的当前模式继续运行，不要求新的命令序号。摩擦轮的运行策略保持不变。
 
 ## 参数、单位与设备绑定
 
@@ -74,8 +82,8 @@ PID 的输入输出单位由环位置决定：角度环输入 rad、输出 rad/s
 
 ```text
 读取新序号命令（无新命令则保留缓存）
-  → OFF 时有界清理事件
   → initialized 时读取三台电机快照
+  → OFF / 未 ready / 恢复首周期时有界清理事件并取消旧角目标
   → Shoot_ApplyCommand：输出许可 → 摩擦轮速度 → 拨弹模式/事件目标 → 统一选择外环并提交
   → Shoot_UpdateFeedback：使用本周期控制前的快照
   → 每十周期发布 Shoot_Feedback_Topic
@@ -86,7 +94,8 @@ enabled 需要总开关 ON 且三个快照均 ready，不代表摩擦轮已达�
 快照早于本周期使能/失能请求，所以许可变化可能下一周期才反映。
 离线速度字段可能保留驱动最后一次值，消费者必须检查 online。
 
-驱动负责单设备反馈超时与安全输出，应用没有任一轮掉线后统一停三台的互锁。
+驱动负责单设备反馈超时与安全输出，应用负责拨弹盘未就绪时取消旧离散动作，
+仍没有任一轮掉线后统一停三台的互锁。
 当前组 Control/RequestEnabled 的返回值被忽略，反馈 enabled 也不证明目标成功发送或执行。
 当前没有有限值参数校验、摩擦轮达速判据、热量/裁判互锁、堵转检测、自动回退或完整发射状态机。
 这些是新业务的实现位置，不应把现有事件保持误当作完整发射流程。
@@ -283,6 +292,7 @@ bool Shoot_Init(void)
         (void) ctx.friction_group.RequestEnabled(false);
         (void) ctx.loader_group.RequestEnabled(false);
     }
+    ctx.loader_was_ready = false;
     ctx.event_angle_active = false;
     ctx.loader_angle_target_rad = 0.0f;
     return ctx.initialized;
@@ -304,8 +314,19 @@ void Shoot_Update(void)
         ctx.command = command;
     }
 
-    if (ctx.command.shoot_mode == ShootMode::OFF) // 禁用期间丢弃积压事件，避免重新开启后补射。
+    if (ctx.initialized)
     {
+        ctx.friction_left_snapshot = ctx.friction_left.GetMotionSnapshot();
+        ctx.friction_right_snapshot = ctx.friction_right.GetMotionSnapshot();
+        ctx.loader_snapshot = ctx.loader.GetMotionSnapshot();
+    }
+    const bool loader_ready = ctx.initialized && ctx.command.shoot_mode == ShootMode::ON &&
+                              ctx.loader_snapshot.ready;
+    if (!loader_ready || !ctx.loader_was_ready)
+    {
+        // OFF、未就绪和恢复首周期均取消旧动作；新事件从恢复后的反馈角重新起步。
+        ctx.event_angle_active = false;
+        ctx.loader_angle_target_rad = 0.0f;
         // 清除本周期开始时已有的事件，避免重新使能后补射；按队列快照限制循环次数。
         ShootEvent discarded_event;
         size_t pending_events = MessageCenter::Shoot_Event_Queue.Size();
@@ -314,12 +335,10 @@ void Shoot_Update(void)
         {
         }
     }
+    ctx.loader_was_ready = loader_ready;
 
     if (ctx.initialized) // 初始化成功才访问设备并运行硬件控制路径。
     {
-        ctx.friction_left_snapshot = ctx.friction_left.GetMotionSnapshot();
-        ctx.friction_right_snapshot = ctx.friction_right.GetMotionSnapshot();
-        ctx.loader_snapshot = ctx.loader.GetMotionSnapshot();
         Shoot_ApplyCommand();
         Shoot_UpdateFeedback();
     }
@@ -382,7 +401,8 @@ if (!accepted) // Shoot 未编入、输入未获许可或 FIFO 已满；由输�
 1. 核对总线、编号、发送组所有权、反馈时效、转向与减速比。
 2. 验证 Init 失败和总开关 OFF 路径；检查上层失联能持续发布 OFF。
 3. 单独验证摩擦轮速度与拨弹盘角度/速度方向，再整定控制器。
-4. 验证 STOP 单发/三连发累加、BURST/REVERSE 切换、OFF 清队列以及队列满返回值。
+4. 验证 STOP 单发/三连发累加、BURST/REVERSE 切换、OFF 清队列以及队列满返回值；验证掉线取消未完成角目标、
+   掉线期间和恢复首周期丢弃事件、恢复后新事件从当前反馈角开始。
 5. 检查反馈 online/ready、控制前快照延迟及离线字段语义；按实车需求补充互锁和恢复策略。
 
 命令所有权、发布时序和反馈读取例程见 [RobotCmd 指南](../RobotCmd/README.md)。

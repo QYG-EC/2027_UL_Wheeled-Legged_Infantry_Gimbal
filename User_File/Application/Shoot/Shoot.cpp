@@ -5,7 +5,7 @@
  * 未直接移植热量限制和堵转阈值：这些参数依赖实车机构与裁判系统数据，当前
  * 工程尚不具备可靠标定条件。
  * 摩擦轮为 M3508/C620 直驱（gear_ratio=1），默认目标 25 rad/s。
- * 当前无就绪、卡弹回退、热量/裁判互锁或完整 FEEDING 状态机。
+ * 当前无摩擦轮达速、卡弹回退、热量/裁判互锁或完整 FEEDING 状态机。
  */
 
 #include "Shoot.h"
@@ -36,6 +36,7 @@ struct ShootContext
     Class_DJIMotor_Group friction_group;
     Class_DJIMotor_Group loader_group;
     bool initialized = false;
+    bool loader_was_ready = false; // 恢复首周期丢弃等待期间的事件，之后只接受新请求。
     bool event_angle_active = false; // 表示正在保持事件累加的角目标，不表示弹丸已完成发射。
     float loader_angle_target_rad = 0.0f;
 };
@@ -205,13 +206,14 @@ bool Shoot_Init(void)
         (void) ctx.friction_group.RequestEnabled(false);
         (void) ctx.loader_group.RequestEnabled(false);
     }
+    ctx.loader_was_ready = false;
     ctx.event_angle_active = false;
     ctx.loader_angle_target_rad = 0.0f;
     return ctx.initialized;
 }
 
 /**
- * @brief 1 kHz 入口：读取最新命令、清理禁用事件、执行控制并以 100 Hz 发布反馈。
+ * @brief 1 kHz 入口：读取命令和反馈、清理禁用/未就绪/恢复时的旧动作，并以 100 Hz 发布反馈。
  * @note Subscriber::Read 不检查消息年龄；未读到命令时保留上一帧，上层必须维护安全命令。
  */
 void Shoot_Update(void)
@@ -223,8 +225,19 @@ void Shoot_Update(void)
         ctx.command = command;
     }
 
-    if (ctx.command.shoot_mode == ShootMode::OFF) // 禁用期间丢弃积压事件，避免重新开启后补射。
+    if (ctx.initialized)
     {
+        ctx.friction_left_snapshot = ctx.friction_left.GetMotionSnapshot();
+        ctx.friction_right_snapshot = ctx.friction_right.GetMotionSnapshot();
+        ctx.loader_snapshot = ctx.loader.GetMotionSnapshot();
+    }
+    const bool loader_ready = ctx.initialized && ctx.command.shoot_mode == ShootMode::ON &&
+                              ctx.loader_snapshot.ready;
+    if (!loader_ready || !ctx.loader_was_ready)
+    {
+        // OFF、未就绪和恢复首周期均取消旧动作；新事件从恢复后的反馈角重新起步。
+        ctx.event_angle_active = false;
+        ctx.loader_angle_target_rad = 0.0f;
         // 清除本周期开始时已有的事件，避免重新使能后补射；按队列快照限制循环次数。
         ShootEvent discarded_event;
         size_t pending_events = MessageCenter::Shoot_Event_Queue.Size();
@@ -233,12 +246,10 @@ void Shoot_Update(void)
         {
         }
     }
+    ctx.loader_was_ready = loader_ready;
 
     if (ctx.initialized) // 初始化成功才访问设备并运行硬件控制路径。
     {
-        ctx.friction_left_snapshot = ctx.friction_left.GetMotionSnapshot();
-        ctx.friction_right_snapshot = ctx.friction_right.GetMotionSnapshot();
-        ctx.loader_snapshot = ctx.loader.GetMotionSnapshot();
         Shoot_ApplyCommand();
         Shoot_UpdateFeedback();
     }
