@@ -53,7 +53,7 @@ CubeMX 生成的 GPIO、DMA、FDCAN、SPI、UART、TIM、USB 和 OSPI 初始化�
 
 HAL 中断回调先进入 BSP 或 `System/callback`：
 
-- CAN 根据 `(FDCAN handle, CAN ID)` 找到注册回调和 `context`。
+- CAN 根据 `(FDCAN handle, 帧类型, CAN ID)` 找到注册回调和 `context`。
 - SPI/OSPI/UART/USB 根据管理对象交付本次缓冲区和有效长度。
 - BMI088 的 SPI/EXTI 回调只推进采集状态机并设置线程标志，VQF 计算留在任务上下文。
 
@@ -71,8 +71,21 @@ bool BSP_CAN_RegisterCallback(uint32_t can_id,
                               void *context);
 ```
 
-注册键同时包含总线与标准帧 ID，因此不同 FDCAN 可以使用相同 ID。`context` 通常指向
-Device 实例，使回调无需再次遍历业务对象。回调运行在接收中断中。
+原接口继续只注册标准帧；`BSP_CAN_RegisterCallbackEx(id, id_type, bus, callback, context)`
+支持指定 `CAN_ID_STANDARD` / `CAN_ID_EXTENDED`。匹配键包含总线、帧类型与完整 ID，
+不同总线或不同帧类型可使用相同数值 ID，不会互相分发。回调运行在接收中断中。
+
+CMake 的 `H7_CAN1_EXTENDED`、`H7_CAN2_EXTENDED`、`H7_CAN3_EXTENDED` 独立控制各路，
+默认均为 `OFF`，只在构建/初始化时生效；不存在运行中自动切换。关闭的总线拒绝扩展帧
+注册和发送，硬件全局过滤也拒绝扩展帧。`BSP_CAN_ExtendedEnabled(bus)` 可查询实际配置。
+
+开启后，该路标准和扩展 Classic 数据帧共享现有 RX FIFO0，软件仅交付已注册 ID。
+远程帧和 CAN FD 不交付设备。使用全局扩展帧放行，无需增加过滤器、FIFO 或修改 IOC/Message RAM；
+波特率沿用现有外设配置。ISR 每次仅处理进入时已有的帧，避免持续流量形成无界循环。
+
+注册表容量仍为全 BSP 共 16 项，周期槽共 32 项；容量共享不改变按总线隔离的路由。
+多 ID 设备初始化失败可用 `BSP_CAN_UnregisterCallbackEx()` 回滚自己成功注册的项；
+该接口核对 context，不移除其他设备注册。
 
 ### 4.2 发送通道
 
@@ -81,7 +94,15 @@ CAN 刻意保留两种语义，不应按消息频率混用：
 | 接口 | 语义 | 适合内容 |
 | --- | --- | --- |
 | `CAN_Tx_Submit` | FIFO，每次成功提交都保留 | 使能、失能、复位、回零、模式切换 |
-| `CAN_Tx_Perform` | 同一 `(总线, ID)` 只保留最新帧 | 电流、速度、位置等周期控制量 |
+| `CAN_Tx_Perform` | 同一 `(总线, 帧类型, ID)` 只保留最新帧 | 电流、速度、位置等周期控制量 |
+
+发送消息应零初始化，新增 `id_type` 字段为零时仍发送标准帧，旧设备调用无需修改。
+标准 ID 限制为 11 位，扩展 ID 为 29 位；扩展帧不可仅根据 ID 数值大小推断。
+
+`CAN_Tx_PerformOwned(message, owner)` 用 `(总线, 帧类型, owner)` 固定一个周期槽，
+允许 VESC 等设备切换命令 ID 时原位覆盖旧目标。owner 必须静态存活，且其发送 ID 由设备
+独占，不与普通周期槽或 FIFO 混用。版本核对与非阻塞 HAL 提交在同一短临界区执行，
+防止安全覆盖后再提交旧快照；已经进入硬件 FIFO 的帧无法撤回。
 
 两个接口都会复制 `Struct_CAN_Tx_Msg`，调用返回后可以复用局部变量。返回 `false` 表示
 参数无效、资源尚未建立或容量不足，Device 必须保留失败状态或决定重试，不能把“写入

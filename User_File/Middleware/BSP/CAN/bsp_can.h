@@ -3,10 +3,10 @@
  * @file    bsp_can.h
  * @brief   板级支持包：CAN 总线驱动
  * @details
- * 接收方向使用 (FDCAN 句柄, CAN ID) 作为回调注册键。
+ * 接收方向使用 (FDCAN 句柄, 帧类型, CAN ID) 作为回调注册键。
  * 发送方向保留两条通道：
  * - CAN_Tx_Submit：每条总线各自的插入队列，保持同总线顺序。
- * - CAN_Tx_Perform：周期缓冲，同一 (FDCAN, CAN ID) 只保留最新数据。
+ * - CAN_Tx_Perform：周期缓冲，同一 (FDCAN, 帧类型, CAN ID) 只保留最新数据。
  * @author  zzm
  * @date    2026-05-18
  * @version v2.1
@@ -28,14 +28,21 @@ extern "C"
 /** Classic CAN 单帧允许的最大数据长度。 */
 #define FDCAN_MAX_PAYLOAD (8)
 
+/** 零初始化保持原标准帧行为；扩展帧还要求对应 H7_CANx_EXTENDED 开启。 */
+typedef enum
+{
+    CAN_ID_STANDARD = 0,
+    CAN_ID_EXTENDED = 1
+} Enum_CAN_Id_Type;
+
 /**
  * @brief CAN 接收回调类型。
  * @param hfdcan 实际收到该帧的 FDCAN 句柄。
- * @param id 接收到的标准帧 ID。
+ * @param id 接收到的 ID，帧类型由注册接口指定。
  * @param data 接收数据，只在本次回调执行期间有效。
  * @param len Classic CAN 数据字节数（0..8），DLC 9..15 按 8 字节处理。
  * @param context 注册时保存的设备实例或用户数据。
- * @note 只分发标准 Classic 数据帧，远程帧不进入设备回调。
+ * @note 只分发已注册的 Classic 数据帧，远程帧不进入设备回调。
  * @note 回调运行在 FDCAN 接收中断中，不应阻塞。
  */
 typedef void (*CAN_RxCallback_t)(FDCAN_HandleTypeDef *hfdcan,
@@ -51,9 +58,10 @@ typedef void (*CAN_RxCallback_t)(FDCAN_HandleTypeDef *hfdcan,
 typedef struct
 {
     FDCAN_HandleTypeDef *hfdcan;     /*!< 目标 FDCAN 总线句柄。 */
-    uint32_t id;                     /*!< 标准帧 ID，取值范围为 0x000~0x7FF。 */
+    uint32_t id;                     /*!< 标准 11 位或扩展 29 位 ID。 */
     uint8_t data[FDCAN_MAX_PAYLOAD]; /*!< 待发送的数据。 */
     uint8_t len;                     /*!< 有效数据长度，取值范围为 1~8。 */
+    Enum_CAN_Id_Type id_type;         /*!< 必须初始化；0 为标准帧，保持旧聚合初始化兼容。 */
 } Struct_CAN_Tx_Msg;
 
 typedef struct
@@ -85,6 +93,18 @@ bool BSP_CAN_RegisterCallback(uint32_t can_id,
                               CAN_RxCallback_t callback,
                               void *context);
 
+/** 查询构建期开关；无效总线返回 false，不改变运行中的配置。 */
+bool BSP_CAN_ExtendedEnabled(FDCAN_HandleTypeDef *hfdcan);
+
+/** 按 (总线, 帧类型, ID) 注册；原接口等同于 STANDARD。 */
+bool BSP_CAN_RegisterCallbackEx(uint32_t can_id, Enum_CAN_Id_Type id_type,
+                                FDCAN_HandleTypeDef *hfdcan,
+                                CAN_RxCallback_t callback, void *context);
+
+/** 初始化失败回滚使用，只移除键和 context 均匹配的注册项。 */
+void BSP_CAN_UnregisterCallbackEx(uint32_t can_id, Enum_CAN_Id_Type id_type,
+                                  FDCAN_HandleTypeDef *hfdcan, void *context);
+
 /**
  * @brief 把一帧消息插入发送队列。
  * @param tx_msg 要插入队列的完整 CAN 消息。
@@ -99,12 +119,19 @@ bool CAN_Tx_Submit(const Struct_CAN_Tx_Msg *tx_msg);
  * @brief 更新周期发送缓冲。
  * @param tx_msg 要发布的最新周期消息。
  * @return true 已更新或分配周期槽；false 参数无效或周期槽已满。
- * @note BSP 自动按 (hfdcan, id) 查找或分配槽，不需要设备层保存槽号。
+ * @note BSP 自动按 (hfdcan, id_type, id) 查找或分配槽，不需要设备层保存槽号。
  * @note 相同键只保留最新数据；不同总线或不同 ID 使用不同槽。
  * @note 本函数只更新内存中的周期槽，不直接调用 HAL 发送。
  * @note true 只表示软件槽接受最新值；后来的值可能在硬件发送前覆盖它。
  */
 bool CAN_Tx_Perform(const Struct_CAN_Tx_Msg *tx_msg);
+
+/**
+ * 按 (总线, 帧类型, owner) 更新唯一周期槽，允许原位切换报文 ID。
+ * owner 非 NULL 且须具有静态生命周期；设备独占其发送 ID，不与普通槽混用。
+ * 只替换尚未进入硬件 FIFO 的数据，不撤回已提交硬件的报文。
+ */
+bool CAN_Tx_PerformOwned(const Struct_CAN_Tx_Msg *tx_msg, const void *owner);
 
 /**
  * @brief 每条总线各处理至多一帧插入发送消息。

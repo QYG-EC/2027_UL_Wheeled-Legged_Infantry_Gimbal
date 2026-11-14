@@ -164,6 +164,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Peripheral/EricTool/dvc_erictool.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Peripheral/Motor/DJImotor/dji_motor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Peripheral/Motor/LKmotor/lk_motor.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Peripheral/Motor/VESCmotor/vesc_motor.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Middleware/Algorithm/Pulse/alg_pulse.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Middleware/Algorithm/CRC/crc8.c
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Middleware/Algorithm/CRC/crc16.c
@@ -175,6 +176,9 @@ option(H7_APP_CHASSIS "Build the Chassis application" OFF)
 option(H7_APP_SHOOT "Build the Shoot application" OFF)
 option(H7_APP_CLIENT_UI "Build the referee HUD example" OFF)
 option(H7_REMOTE_WFLY "Use the WFLY channel mapping for UART5 S.BUS input" OFF)
+option(H7_CAN1_EXTENDED "Enable extended Classic CAN frames on CAN1" OFF)
+option(H7_CAN2_EXTENDED "Enable extended Classic CAN frames on CAN2" OFF)
+option(H7_CAN3_EXTENDED "Enable extended Classic CAN frames on CAN3" OFF)
 if(H7_BOARD STREQUAL "GimbalBoard")
     set(H7_APP_GIMBAL ON)
     set(H7_APP_CHASSIS OFF)
@@ -310,6 +314,7 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
         User_File/Device/Peripheral/Motor/DMmotor
         User_File/Device/Peripheral/Motor/DJImotor
         User_File/Device/Peripheral/Motor/LKmotor
+        User_File/Device/Peripheral/Motor/VESCmotor
         User_File/Middleware/Algorithm/Pulse/
         User_File/Middleware/Algorithm/CRC/
         User_File/Device/Peripheral/Remote/
@@ -334,6 +339,9 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     SHOOT=$<BOOL:${H7_APP_SHOOT}>
     H7_CLIENT_UI=$<BOOL:${H7_APP_CLIENT_UI}>
     H7_REMOTE_WFLY=$<BOOL:${H7_REMOTE_WFLY}>
+    H7_CAN1_EXTENDED=$<BOOL:${H7_CAN1_EXTENDED}>
+    H7_CAN2_EXTENDED=$<BOOL:${H7_CAN2_EXTENDED}>
+    H7_CAN3_EXTENDED=$<BOOL:${H7_CAN3_EXTENDED}>
     H7_HAS_DM_MOTOR=$<NOT:$<STREQUAL:${H7_BOARD},ChassisBoard>>
 )
 

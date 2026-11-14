@@ -10,6 +10,7 @@
 #include "cmsis_os2.h"
 #include "dji_motor.h"
 #include "lk_motor.h"
+#include "vesc_motor.h"
 #if H7_HAS_DM_MOTOR
 #include "dmmotor.h"
 #endif
@@ -33,6 +34,7 @@ extern "C" void Status_Task(void *argument)
         DaemonManager::CheckAll();
         Class_DJIMotor::ServiceAll();
         Class_LKMotor::ServiceAll();
+        Class_VESCMotor::ServiceAll();
 #if H7_HAS_DM_MOTOR
         Class_DMMotor::ServiceAll();
 #endif

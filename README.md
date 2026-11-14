@@ -67,7 +67,7 @@ BSP 以外设管理对象和接口函数承接 HAL，设备层通过注册回调
 
 | 模块 | 提供的能力 | 使用入口 |
 | --- | --- | --- |
-| CAN / FDCAN | 按总线与 ID 分发接收；命令队列与最新周期帧两条发送通道 | [bsp_can.h](User_File/Middleware/BSP/CAN/bsp_can.h) |
+| CAN / FDCAN | 按总线、帧类型与 ID 分发接收；扩展帧逐路可选，默认关闭 | [bsp_can.h](User_File/Middleware/BSP/CAN/bsp_can.h) |
 | UART | DMA + IDLE 不定长接收、双缓冲、错误恢复；DMA 发送复制到专用缓冲并返回提交状态 | [bsp_uart.h](User_File/Middleware/BSP/UART/bsp_uart.h) |
 | SPI | 外设管理、片选、收发缓冲与完成回调 | [SPI](User_File/Middleware/BSP/SPI) |
 | USB | CDC 收发封装，供调试通信组件使用 | [USB](User_File/Middleware/BSP/USB) |
@@ -76,9 +76,11 @@ BSP 以外设管理对象和接口函数承接 HAL，设备层通过注册回调
 
 CAN 的两条发送通道适用于不同数据语义：
 
-- `CAN_Tx_Perform()` 更新 `(FDCAN, ID)` 对应的周期槽，同一键保留最新数据，适合连续控制目标。
+- `CAN_Tx_Perform()` 更新 `(FDCAN, 帧类型, ID)` 对应的周期槽，同一键保留最新数据，适合连续控制目标。
 - `CAN_Tx_Submit()` 将离散命令复制到 FDCAN1/2/3 各自的 FIFO；同总线按序重试，单总线拥塞不阻断其他总线或周期槽。
 - `CanTxTask` 每 1 ms 调用 `BSP_CAN_SendAsync()` / `BSP_CAN_SendPer()`。三路 FDCAN 已启用硬件 Auto Retransmission；软件队列只重试 HAL 尚未接受的帧。软件提交成功、写入硬件 FIFO、总线发送、对端收到和设备执行是不同阶段；调用方须检查提交结果。
+
+`H7_CAN1_EXTENDED`、`H7_CAN2_EXTENDED`、`H7_CAN3_EXTENDED` 分别控制对应总线的扩展帧，默认均为 `OFF`。开启后该路标准帧继续可用；配置与接口见 [BSP CAN 说明](User_File/Middleware/BSP/README.md#41-接收)。
 
 CAN 接收回调在中断上下文执行。UART 的 DMA 接收须同时具备 CubeMX 的 RX DMA 配置和 BSP 管理入口，接入新端口时需同步核对。
 
@@ -95,6 +97,7 @@ CAN 接收回调在中断上下文执行。UART 的 DMA 接收须同时具备 Cu
 | DJI | M2006/C610、M3508/C620、GM6020；反馈、控制环与分组发送 | [DJI 电机驱动](User_File/Device/Peripheral/Motor/DJImotor/dji_motor.md) |
 | 瓴控 LK | MF/MH/MG 同协议型号；单机电流/原生速度/增量位置、广播电流指令；减速比与编码器参数须按型号配置 | [LK 电机驱动](User_File/Device/Peripheral/Motor/LKmotor/lk_motor.md) |
 | 达妙 | MIT、位置-速度、速度、力位混控接口；实际模式取决于型号与固件 | [达妙电机驱动](User_File/Device/Peripheral/Motor/DMmotor/dmmotor.md) |
+| VESC | 九种基本单帧控制、状态反馈和掉线安全输出；未绑定机构 | [VESC 驱动](User_File/Device/Peripheral/Motor/VESCmotor/README.md) |
 
 电机型号、CAN ID、反馈源、方向、映射范围和控制参数由使用方配置；应用层负责控制周期、目标生成与输出边界。
 
@@ -236,7 +239,7 @@ Gimbal 合并姿态捕获条件，并保留恢复后等待新 IMU 目标的要�
 ### 数据新鲜度、发送与可观测性
 
 - `Topic<T>::ReadFresh()` 用发布时间戳拒绝过期数据。云台对 INS 使用 10 ms 新鲜度门限；失效时向两轴达妙请求失能，电机立即发布安全 MIT 输出；INS 恢复且两轴 ready 后捕获当前姿态，IMU 模式等待新目标。见 [云台说明](User_File/Application/Gimbal/README.md)。
-- 连续控制目标走 `CAN_Tx_Perform()`，同一 `(FDCAN, ID)` 只保留最新值；使能、失能、清错和模式设置走 `CAN_Tx_Submit()` FIFO。软件接收成功、写入硬件 FIFO 和设备实际执行是三个不同阶段。
+- 连续控制目标走 `CAN_Tx_Perform()`，同一 `(FDCAN, 帧类型, ID)` 只保留最新值；使能、失能、清错和模式设置走 `CAN_Tx_Submit()` FIFO。软件接收成功、写入硬件 FIFO 和设备实际执行是三个不同阶段。
 - `BSP_CAN_GetTxStats()` 提供命令队列满、周期槽满、硬件 FIFO 满和 HAL 发送失败的饱和计数快照。计数只提供证据，不自动改变调度或执行安全策略。
 - 主机测试可以确认协议编解码、ID/DLC 隔离、超时边界、队列溢出和数据新鲜度；真实波特率/采样点、终端电阻、总线仲裁、供电时序、电机参数和 EMC 必须在目标板上确认。
 
