@@ -90,9 +90,7 @@ void ClientUI_Capture(void)
     auto input = InputState_Read();
     input.now_ms = HAL_GetTick();
     next.target_received_ms = input.vision.received_ms;
-    next.target_detected = input.vision.valid &&
-                           input.now_ms - input.vision.received_ms <= ClientUIConfig::kTargetMaxAgeMs &&
-                           std::isfinite(input.vision.yaw_angle_rad) && std::isfinite(input.vision.pitch_angle_rad);
+    next.target_detected = SourceArbitration_VisionReady(input);
     // 无本地输入来源（例如底盘板）时保持未知，不伪造关闭状态。
     if (input.remote.valid || input.vision.valid)
     {

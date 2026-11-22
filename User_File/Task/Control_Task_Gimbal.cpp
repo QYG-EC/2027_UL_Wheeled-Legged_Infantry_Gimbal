@@ -7,13 +7,15 @@
  */
 #include "Gimbal.h"
 #include "RobotCmd.h"
-#include "remote_input.h"
+#include "gimbal_input.h"
+#include "sys_imu.h"
 #include "Shoot.h"
-#include "Init.h"
 #include "board_transport.h"
 #include "message_center.h"
 #include "output.h"
 #include "remote_publisher.h"
+#include "gimbal_tuning.h"
+#include "Init.h"
 #include "cmsis_os2.h"
 
 #if H7_CLIENT_UI
@@ -36,7 +38,7 @@ extern "C" void Control_Task(void *)
     {
         for (;;) osDelay(1000U);
     }
-    (void)RemoteInput_Init();
+    GimbalInput_Init();
     Gimbal_Init();
     (void)Shoot_Init();
 
@@ -44,10 +46,28 @@ extern "C" void Control_Task(void *)
     {
         osThreadFlagsWait(0x0001, osFlagsWaitAny, osWaitForever);
         BoardTransport_Poll();
-        RemoteInput_Update();
+        System_Gimbal_IMU_Update();
+        GimbalInput_Update();
         RobotCmd_Update();
+        Struct_Gimbal_Tuning_Request tuning_request{};
+        if (GimbalTuning_TakeRequest(tuning_request))
+        {
+            float current[10]{};
+            uint8_t status = 0U;
+            if (!Gimbal_GetTuningParameters(current))
+            {
+                status = 2U;
+            }
+            else if (tuning_request.operation == 1U && !Gimbal_SetTuningParameters(tuning_request.values))
+            {
+                status = 1U;
+            }
+            (void) Gimbal_GetTuningParameters(current);
+            GimbalTuning_Reply(tuning_request, status, current);
+        }
         Gimbal_Update();
         Shoot_Update();
+        GimbalInput_SendMouseCommand();
 #if H7_CLIENT_UI
         ClientUI_Capture();
 #endif

@@ -10,4 +10,7 @@ uint32_t BoardTransport_OfflineDurationMs(void);
 void BoardTransport_Poll(void);
 void BoardTransport_SendChassis(const ChassisCmd &command);
 
+/** @brief 上板非阻塞提交左键0/1/2；返回是否入队，成功不等于下板执行。 */
+bool BoardTransport_SendMouseCommand(uint8_t command);
+
 #endif

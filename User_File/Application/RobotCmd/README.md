@@ -1,5 +1,12 @@
 # RobotCmd 命令组织与分发指南
 
+正式GimbalBoard使用Input的键鼠总开关优先策略，键鼠许可独立于下板遥控。
+RATE命令的积分由Gimbal执行，自瞄IMU命令直接指定绝对角，RobotCmd仍是命令唯一发布者、按字段变化发布。
+自瞄许可和失效回手动行为见[自瞄控制说明](../../../docs/AUTOAIM_CONTROL.md)。
+本页以下旧Remote许可约定适用于未启用上板速度策略的路径；上板细节以
+[Input指南](../Input/README.md#正式上板云台输入)为准。
+
+
 RobotCmd 拥有云台、底盘和发射的缓存命令，统一接收输入仲裁结果并通过 Output 发布。
 它不访问电机、IMU、HAL 或 CAN 设备；机构算法由各 Application 执行。
 本指南重点说明新增输入、重新开发命令逻辑以及与 [Shoot](../Shoot/README.md) 的衔接。

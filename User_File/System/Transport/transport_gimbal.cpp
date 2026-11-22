@@ -20,21 +20,88 @@ uint8_t last_sequence;
 uint64_t last_valid_rx_us;
 Daemon transport_daemon{TransportProtocol::kCommandMaxAgeUs / 1000U};
 
-void Receive(FDCAN_HandleTypeDef *bus, uint32_t id, uint8_t *data,
-             uint32_t size, void *)
+// 两种消息独立保存接收状态与序号，底盘反馈不能覆盖遥控云台输入。
+volatile uint8_t rate_bytes[TransportProtocol::kPayloadSize];
+volatile uint64_t rate_rx_us;
+volatile bool rate_pending;
+bool rate_has_sequence;
+uint8_t rate_last_sequence;
+uint64_t rate_last_valid_rx_us;
+
+// 与现有底盘反馈保持相同的实际接收时间、序号和链路活性语义。
+void PollRate()
 {
-    if (bus != TransportConfig_Bus() ||
-        id != TransportConfig::kChassisFeedbackCanId ||
-        data == nullptr || size != TransportProtocol::kPayloadSize)
+    uint8_t bytes[TransportProtocol::kPayloadSize];
+    uint64_t received_us = 0U;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    const bool available = rate_pending;
+    if (available)
+    {
+        for (uint8_t index = 0U; index < TransportProtocol::kPayloadSize; ++index)
+        {
+            bytes[index] = rate_bytes[index];
+        }
+        received_us = rate_rx_us;
+        rate_pending = false;
+    }
+    __DMB();
+    __set_PRIMASK(primask);
+    if (!available) { return; }
+    const uint64_t now_us = SYS_Timestamp_Get_Microsecond();
+    if (now_us < received_us || now_us - received_us > TransportProtocol::kCommandMaxAgeUs)
     {
         return;
     }
-    for (uint8_t index = 0U; index < TransportProtocol::kPayloadSize; ++index)
+    GimbalRateInput input{};
+    uint8_t sequence = 0U;
+    if (!TransportProtocol::DecodeGimbalRateInput(bytes, sizeof(bytes), input, sequence))
     {
-        pending_bytes[index] = data[index];
+        return;
     }
-    pending_rx_us = SYS_Timestamp_Get_Microsecond();
-    pending = true;
+    transport_daemon.Feed();
+    if (rate_has_sequence && received_us - rate_last_valid_rx_us > TransportProtocol::kCommandMaxAgeUs)
+    {
+        rate_has_sequence = false;
+    }
+    rate_last_valid_rx_us = received_us;
+    if (rate_has_sequence && !TransportProtocol::SequenceNewer(sequence, rate_last_sequence))
+    {
+        return;
+    }
+    MessageCenter::Remote_Gimbal_Input_Topic.PublishAt(input, received_us);
+    rate_last_sequence = sequence;
+    rate_has_sequence = true;
+}
+
+void Receive(FDCAN_HandleTypeDef* bus, uint32_t id, uint8_t* data,
+             uint32_t size, void*)
+{
+    uint8_t type = 0U;
+    if (bus != TransportConfig_Bus() || id != TransportConfig::kUplinkCanId ||
+        !GimbalLink_GetMessageType(data, size, &type))
+    {
+        return;
+    }
+    // 同一0x80仅注册一个回调；按类型分开缓存，连续到达的两类帧不能互相覆盖。
+    if (type == GIMBAL_LINK_RATE_INPUT)
+    {
+        for (uint8_t index = 0U; index < TransportProtocol::kPayloadSize; ++index)
+        {
+            rate_bytes[index] = data[index];
+        }
+        rate_rx_us = SYS_Timestamp_Get_Microsecond();
+        rate_pending = true;
+    }
+    else if (type == GIMBAL_LINK_CHASSIS_FEEDBACK)
+    {
+        for (uint8_t index = 0U; index < TransportProtocol::kPayloadSize; ++index)
+        {
+            pending_bytes[index] = data[index];
+        }
+        pending_rx_us = SYS_Timestamp_Get_Microsecond();
+        pending = true;
+    }
 }
 }
 
@@ -47,7 +114,7 @@ bool BoardTransport_Init(void)
 {
     if (!initialized)
     {
-        initialized = BSP_CAN_RegisterCallback(TransportConfig::kChassisFeedbackCanId,
+        initialized = BSP_CAN_RegisterCallback(TransportConfig::kUplinkCanId,
             TransportConfig_Bus(), Receive, nullptr) &&
             DaemonManager::Register(transport_daemon);
     }
@@ -67,6 +134,7 @@ uint32_t BoardTransport_OfflineDurationMs(void)
 void BoardTransport_Poll(void)
 {
     if (!initialized) { return; }
+    PollRate();
     uint8_t bytes[TransportProtocol::kPayloadSize];
     uint64_t received_us = 0U;
     const uint32_t primask = __get_PRIMASK();
@@ -133,4 +201,20 @@ void BoardTransport_SendChassis(const ChassisCmd &command)
     {
         ++sequence;
     }
+}
+
+bool BoardTransport_SendMouseCommand(uint8_t command)
+{
+    if (!initialized) { return false; }
+    static uint8_t sequence;
+    Struct_CAN_Tx_Msg message{};
+    message.hfdcan = TransportConfig_Bus();
+    message.id = TransportConfig::kDownlinkCanId;
+    message.len = TransportProtocol::kPayloadSize;
+    if (!GimbalLink_EncodeMouseCommand(command, sequence, message.data) || !CAN_Tx_Submit(&message))
+    {
+        return false;
+    }
+    ++sequence;
+    return true;
 }

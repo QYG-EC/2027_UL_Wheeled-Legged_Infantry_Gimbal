@@ -8,8 +8,10 @@
 /** 当前底盘调试限幅；Remote 映射与来源仲裁使用同一组 SI 边界。 */
 constexpr float INPUT_MAX_TRANSLATION_M_S = 0.5f;
 constexpr float INPUT_MAX_ROTATION_RAD_S = 1.0f;
+constexpr uint32_t INPUT_REMOTE_MAX_AGE_MS = 50U;
+constexpr uint32_t INPUT_KEYBOARD_MAX_AGE_MS = 100U;
 
-/** 固定来源选择；只有遥控模式切换逻辑应调用 InputState_Select。 */
+/** 非上板速度策略的显式来源选择；上板使用独立键鼠控制权标志。 */
 enum class InputSource : uint8_t
 {
     Remote,
@@ -45,7 +47,10 @@ struct InputState
     InputSource selected = InputSource::Remote;
     uint32_t selected_at_ms = 0U;
     uint32_t now_ms = 0U;
+    uint32_t vision_max_age_ms = 100U; ///< 上板由输入配置覆盖；0关闭视觉目标超时。
     bool vision_enabled = false;
+    bool gimbal_rate_sources = false; ///< 上板先选遥控/键鼠，再应用显式请求的视觉绝对角。
+    bool keyboard_enabled = false; ///< 独立于数据有效性的Ctrl+S控制权锁存。
 };
 
 /** 以下接口仅供同一 ControlTask 上下文调用，不从 UART/CAN ISR 写入。 */
@@ -57,5 +62,12 @@ void InputState_SubmitKeyboard(const ControlInput &input);
 void InputState_SubmitVision(const VisionAimInput &input);
 void InputState_Select(InputSource source, bool vision_enabled, uint32_t now_ms);
 InputState InputState_Read();
+/**
+ * @brief 初始化时选择上板来源策略，不影响其他板型原有仲裁。
+ * @param vision_max_age_ms 视觉目标允许年龄，0关闭视觉超时。
+ */
+void InputState_EnableGimbalRateSources(uint32_t vision_max_age_ms = 1000U);
+/** @brief 设置键鼠控制权；数据失效不自动清除此标志。 */
+void InputState_SetKeyboardEnabled(bool enabled);
 
 #endif

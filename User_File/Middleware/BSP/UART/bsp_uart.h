@@ -84,11 +84,26 @@ extern struct Struct_UART_Manage_Object USART10_Manage_Object;
 
 /* Exported function declarations --------------------------------------------*/
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 void UART_Init(UART_HandleTypeDef *huart, UART_Callback Callback_Function);
+
+/** @brief 显式启动无接收DMA端口的单字节中断接收；成功返回true，不改变其他端口默认配置。 */
+bool UART_InitInterruptRx(UART_HandleTypeDef *huart, UART_Callback callback);
+/** @brief 非阻塞发送：有发送DMA时复用原接口，否则复制到BSP缓冲后启动中断发送。 */
+uint8_t UART_Transmit_Nonblocking(UART_HandleTypeDef *huart, uint8_t *data, uint16_t length);
 
 void UART_Reinit(UART_HandleTypeDef *huart);
 
 void UART_TIM_1ms_Recover_PeriodElapsedCallback(void);
+
+/**
+ * @brief 在任务上下文处理待恢复的接收通道。
+ * @note 每10 ms调用一次；与1 ms分频入口二选一，不可重复调度。
+ */
+void UART_TIM_10ms_Recover_PeriodElapsedCallback(void);
 
 /**
  * @brief 发送字节帧；DMA 路径复制到 BSP 缓冲区，返回后调用方可复用源数据。
@@ -96,5 +111,9 @@ void UART_TIM_1ms_Recover_PeriodElapsedCallback(void);
  *       同一路 TX 统一经本接口提交；UART_Init 仅用于无在途传输的初始化。
  */
 uint8_t UART_Transmit_Data(UART_HandleTypeDef *huart, uint8_t *Data, uint16_t Length);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // !BSP_UART_H

@@ -1,9 +1,49 @@
 # Input 输入适配与仲裁指南
 
 Input 将设备解析结果转换为 SI 命令，保存固定来源状态，再由 SourceArbitration 选择本周期目标。
-RobotCmd 根据仲裁结果发布命令；Input 不直接控制电机，不另建消息总线。
-当前仅绑定 UART5 S.BUS，且只映射底盘；VTM、Keyboard、Vision 有提交接口，尚未绑定实际设备。
+RobotCmd根据仲裁结果发布命令；Input不直接控制电机，不另建消息总线。
+本文上板策略以“正式上板云台输入”为准，后续S.BUS细节保留供SingleBoard使用。
+SingleBoard保留UART5 S.BUS底盘映射；正式GimbalBoard使用下述板间速度与串口10键鼠输入。
 默认保留旧通道映射；`H7_REMOTE_WFLY=ON` 时选用下文的 WFLY 底盘映射。
+
+
+## 正式上板云台输入
+
+正式GimbalBoard调用`GimbalInput_Init/Update`，不再调用上板本地S.BUS适配。
+`System_Init`通过BoardConfig唯一绑定串口10（115200、8N1）到现有Referee解析器，
+键鼠使用2024附录V1.7.0的0x0304、12字节载荷。下板遥控输入来自
+`Remote_Gimbal_Input_Topic`，格式见[板间通信](../../System/Transport/README.md)。
+
+适配器仅在控制任务提交InputState；协议解析、接收缓冲和完整快照归Device/BSP。
+`InputState_EnableGimbalRateSources()`选择上板专用来源策略，其他板型原有策略保持。
+
+- Ctrl+S组合从未按下到按下时翻转键鼠总开关；上电关闭、长按只翻转一次。
+- 键鼠开启时始终拥有控制权，独立于遥控有效性；数据过期仍保持控制权、输出RATE零速度。
+- Ctrl+S关闭后让出控制权，使用下板两轴rad/s、enabled及autoaim_requested标志。
+- 沿用现有输入时效：Remote 50ms、Keyboard 100ms；Transport已有100ms接收门限不代替Remote时效。
+- 只有新的合法0x0304更新序号才处理键鼠输入；反复读取旧快照不会续期，也不会重复翻转开关。
+
+`Struct_Gimbal_Input_Config`提供两轴`rad_per_count`和`mouse_frame_period_s`。
+两轴默认灵敏度为0.0002 rad/计数，帧周期默认1/30s，调用方须提供正的帧周期。
+X正对应Yaw右转、Y正对应Pitch抬头；Yaw取负X、Pitch取正Y，再乘对应灵敏度除以帧周期，
+由Gimbal按1ms周期积分。灵敏度与换算周期在gimbal_input.h配置，需实机核对。
+
+F按下边沿切换双摩擦轮，退出键鼠控制或键鼠超过100ms过期关闭并清除开启状态。
+右键按满300ms请求自瞄，松开回手动。自瞄期间摩擦轮可保持运行，左键不发送1/2。
+手动且双摩擦轮达速时，左键短按不足300ms松开发1，长按达到300ms发2，松开发0。
+达速前开始的按压须松开重按；已接受长按超差暂停发0，持续按住且恢复达速后继续发2。
+F关闭、自瞄、切源或键鼠过期取消按压，必须松开再按。
+ControlTask在Shoot_Update后调用GimbalInput_SendMouseCommand，读取本周期达速结果。
+0/2每10ms及状态变化时提交，1仅松开时提交一次；队列满时1不补发，0/2下周期更新。
+帧过期沿用100ms门限，左右键长按计时只消费新帧的实际接收时间。
+
+键鼠快照保留HAL毫秒时戳；板间微秒时戳按帧年龄投影到HAL时基，避免混用不同起点。
+串口1[24字节视觉链路](../../Device/Peripheral/Vision/README.md)已接入正式控制。
+遥控健康且CH8>1400时CH7>1400才能请求自瞄。键鼠控制时忽略CH7，由鼠标右键请求自瞄。
+自瞄采用绝对角，无目标/默认1000ms过期恢复手动，参考速度为0；不自动开火。
+`Struct_Gimbal_Input_Config`集中提供目标/反馈时效、反馈周期和固定弹速。
+完整逻辑、调参位置及协议字段见[自瞄控制说明](../../../docs/AUTOAIM_CONTROL.md)。
+本文以下S.BUS、显式选源与Vision约定适用于未启用上板速度策略的路径。
 
 ## 文件与职责
 

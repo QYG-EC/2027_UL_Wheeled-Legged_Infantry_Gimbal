@@ -40,7 +40,7 @@ static const PulseEntry_t TIM_1ms_Callback_Table[] = {
     {1U, UART_TIM_1ms_Recover_PeriodElapsedCallback},
     {10U, BSP_WS2812_TIM_10ms_Write_PeriodElapsedCallback},
     {50U, BSP_Key_TIM_50ms_Process_PeriodElapsedCallback},
-    {128U, BMI088_TIM_128ms_Calculate_PeriodElapsedCallback},
+    // {128U, BMI088_TIM_128ms_Calculate_PeriodElapsedCallback},
 };
 
 

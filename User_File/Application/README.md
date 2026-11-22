@@ -5,6 +5,7 @@ Application 层描述机器人“要做什么”，按机械功能组织 Gimbal�
 Device 与 BSP。
 
 本文单独维护应用架构，不把具体机器人控制逻辑混入 BSP 总览。
+正式上下板自瞄链路及调参入口见[自瞄控制说明](../../docs/AUTOAIM_CONTROL.md)。
 
 ## 物理单位
 
@@ -42,7 +43,7 @@ App 决定功能许可、目标和恢复策略。StatusTask 在 CheckAll 后调�
 | 模块 | 职责 | 拥有/调用的主要对象 |
 | --- | --- | --- |
 | `RobotCmd` | 命令唯一所有者和发布者；输入互锁失效时立即发布安全目标 | Output、ShootEvent FIFO、反馈 Topic getter |
-| `Gimbal` | 云台模式、目标角/速度、达妙控制和反馈 | 两轴 Class_DMMotor、Yaw PID、INS Topic |
+| `Gimbal` | 云台模式、目标角/速度、达妙控制和反馈 | 两轴 Class_DMMotor、双轴LQR、独立惯性Topic |
 | `Chassis` | 四舵轮运动学、最短转向和电机目标 | 8 个 DJI 电机及电机组 |
 | `Shoot` | 摩擦轮、拨弹连续模式和离散射击动作 | 3 个 DJI 电机、ShootEvent FIFO |
 | `ClientUI` | 可选 HUD、本板显示快照与非阻塞刷新；默认关闭 | Client_UI_State_Topic、Referee 非阻塞绘图接口 |
@@ -69,8 +70,8 @@ Message Center，云台板的底盘命令通过 `RemotePublisher` 进入固定 C
 ```text
 SingleBoard: RobotCmd_Init → RemoteInput_Init → Gimbal_Init(启用时) → Chassis_Init(启用时) → Shoot_Init(启用时)
              RemoteInput_Update → RobotCmd_Update → Gimbal_Update(启用时) → Chassis_Update(启用时) → Shoot_Update(启用时)
-GimbalBoard: BoardTransport_Init → RobotCmd_Init → RemoteInput_Init → Gimbal_Init → Shoot_Init
-             BoardTransport_Poll → RemoteInput_Update → RobotCmd_Update → Gimbal_Update → Shoot_Update
+GimbalBoard: BoardTransport_Init → RobotCmd_Init → GimbalInput_Init → Gimbal_Init → Shoot_Init
+             BoardTransport_Poll → System_Gimbal_IMU_Update → GimbalInput_Update → RobotCmd_Update → Gimbal_Update → Shoot_Update
 ChassisBoard: BoardTransport_Init → Chassis_Init
               BoardTransport_Poll → Chassis_Update
 ```
@@ -78,6 +79,9 @@ ChassisBoard: BoardTransport_Init → Chassis_Init
 RobotCmd 初始化失败时控制任务停在延时循环；不会继续初始化电机应用。RobotCmd 在
 消费者之前发布命令；反馈 getter 在调用时直接读取各 Application 的 Topic。
 Gimbal/Chassis 板间轮询复用该任务，不创建额外控制任务。
+
+正式GimbalBoard由System_Init绑定串口3外置惯性单元和串口10图传键鼠；输入使用独立键鼠总开关优先策略。
+本节后续旧Remote安全许可/S.BUS描述适用于SingleBoard路径，正式上板策略以[Input指南](Input/README.md#正式上板云台输入)为准。
 
 ## 4. RobotCmd：命令唯一入口
 
@@ -87,7 +91,8 @@ RobotCmd 不直接访问电机、CAN 或 IMU。输入链现在是：
 
 ```text
 UART5 S.BUS → RemoteInput_Update → InputState(Remote)
-VTM / Keyboard / Vision → InputState_Submit*（接入接口，当前未绑定设备）
+SingleBoard的VTM / Keyboard / Vision → InputState_Submit*（预留接口）
+GimbalBoard的串口10键鼠 / 下板云台速度 → GimbalInput → InputState
 InputState → SourceArbitration_Resolve → RobotCmd_Update → Output
 ```
 
@@ -96,7 +101,7 @@ InputState → SourceArbitration_Resolve → RobotCmd_Update → Output
 调用 `InputState_Select()` 后，才选择 VTM 或 Keyboard。新来源必须在切换后提供新鲜
 命令（100 ms 门限），否则进入安全态，不自动回退。Vision 只有在显式允许、目标新鲜
 且当前来源允许云台控制时，才覆盖云台角目标；目标失效后云台进入 `LOCK`。
-VTM、Keyboard、Vision 当前没有绑定 UART/协议，生产固件不会自动选择或启用它们。
+上述未绑定设备的约定只适用于SingleBoard预留来源；正式GimbalBoard已绑定串口10键鼠并由Ctrl+S切换。
 
 以下设置接口保留供已有调用方使用；控制任务运行时，仲裁结果在每次
 `RobotCmd_Update()` 中覆盖缓存目标：
@@ -136,38 +141,13 @@ false，并保持调用者输出不变。RobotCmd 不再维护应用反馈的二
 
 ## 5. Gimbal
 
-### 5.1 数据输入
-
-- `INS_State_Topic`：Yaw/Pitch/Roll 和机体系角速度。
-- `Gimbal_Command_Topic`：目标角、前馈角速度和模式。
-
-### 5.2 模式
-
-| 模式 | 行为 |
-| --- | --- |
-| `DISABLED` | 关闭 Yaw/Pitch 输出 |
-| `IMU` | 使用命令目标与 INS 状态执行闭环 |
-| `LOCK` | 捕获并保持当前姿态，忽略命令目标字段 |
-
-Yaw 使用 INS 角度/速度串级闭环，通过达妙 MIT 纯转矩指令输出 N·m；Pitch 将 INS
-姿态误差转换为 MIT 电机位置/速度目标，并限制机械范围。两轴预先配置为 MIT 模式。
-
-初始化只校验云台机构关系和控制参数并注册驱动；设备参数由 DMMotor 初始化校验。Gimbal 不维护
-就绪超时、退避、稳定窗口或 CAN 软件槽失败状态；电机协议在请求边沿立即提交，并由 DMMotor 的 100 Hz 服务依据在线反馈纠正。普通协议纠正在离线期间暂停，设备自身的离线安全失能仍由 DMMotor 提交及补交；已进入 FDCAN 硬件 FIFO 的帧由硬件自动重发。恢复后重置控制器
-并捕获当前姿态，IMU 模式等待新目标，避免旧目标重放；DISABLED、INS 无效或初始化失败时请求功能失能。活动模式直接更新目标并计算控制，电机故障与未就绪输出由驱动保护；ready 只用于姿态捕获与恢复，不再通过 PrepareControl 作设备停机准入。
-
-`UpdateTarget()` 将未就绪、首次就绪／恢复、进入 LOCK 合并为一次 `CapturePose()`。
-未就绪期间每周期捕获，恢复当周期再次捕获并消费当前命令序号；其余周期才接收 IMU 新序号目标。
-因此合并条件不改变控制器重置次数，也不允许恢复前的目标重放。
-
-配置集中在 [Gimbal_Config.h](Gimbal/Gimbal_Config.h)。默认关闭云台编译选项；Yaw 转矩环
-增益全零，Pitch 增益和限位来自参考机构示例，均须实机标定。完整公式、参数来源、
-状态语义和测试见 [双达妙云台说明](Gimbal/README.md)。
-
-### 5.3 反馈
-
-控制每 1 ms 更新，`GimbalFeedback` 每 10 个周期发布一次，包含姿态、角速度、INS
-有效性和两轴电机的 `ready` 汇总；`Gimbal_GetStatus()` 根据当前事实提供诊断状态。
+Gimbal采用双轴LQR（Linear Quadratic Regulator，线性二次调节器）纯转矩控制。
+上板Pitch位置取外置惯性单元的−Pitch、Yaw位置取惯性Yaw；两轴角速度均取各自电机反馈除以传动比，
+Pitch默认增益及前馈由`Gimbal_Default_Config()`装载，复位自动恢复。
+具体坐标、增益及验收状态以[云台当前控制链](Gimbal/README.md#当前控制链)为准。
+RATE速度目标在Gimbal内按1ms积分，两轴独立处理使能、就绪和姿态捕获。
+当前配置启用Yaw和Pitch，两轴独立按各自就绪状态输出。
+命令模式、参数、旧位置约束及实机验证范围统一维护于[Gimbal指南](Gimbal/README.md)。
 
 ## 6. Chassis
 
@@ -293,7 +273,7 @@ void Example_Update(void);
 ### Gimbal
 
 - FDCAN 总线、节点 ID、机械范围和方向。
-- 两轴达妙 MIT 模式与协议量程、Yaw 转矩 PID、Pitch MIT 增益及限位。
+- 两轴达妙MIT协议量程、惯性坐标与转矩方向、双轴LQR参数及保留的位置约束。
 - INS 坐标系、角度符号和零位。
 
 ### Chassis

@@ -136,6 +136,7 @@ target_sources(${CMAKE_PROJECT_NAME} PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}/User_File/System/MessageCenter/message_center.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_Config/Board/board_tasks_common.c
         ${CMAKE_CURRENT_LIST_DIR}/User_File/System/Transport/transport_protocol.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/User_File/System/Transport/gimbal_link_protocol.c
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Onboard/Power/bsp_power.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Onboard/BMI088/bsp_bmi088.cpp
         ${CMAKE_CURRENT_LIST_DIR}/User_File/Device/Onboard/BMI088/Accel/bsp_bmi088_accel.cpp
@@ -198,10 +199,12 @@ set(H7_GIMBAL_TASK_DEVICE_SOURCES
     User_File/Device/Peripheral/Remote/remote_control.c
     User_File/Device/Peripheral/Remote/sbus.cpp
     User_File/Device/Peripheral/Remote/wfly.cpp)
-set(H7_CHASSIS_DEVICE_SOURCES
+set(H7_REFEREE_CORE_SOURCES
     User_File/Device/Peripheral/Referee/referee_daemon.cpp
     User_File/Device/Peripheral/Referee/crc_ref.c
-    User_File/Device/Peripheral/Referee/referee_26.c
+    User_File/Device/Peripheral/Referee/referee_26.c)
+set(H7_CHASSIS_DEVICE_SOURCES
+    ${H7_REFEREE_CORE_SOURCES}
     User_File/Device/Peripheral/Referee/referee_UI_26.c
     User_File/Device/Peripheral/Referee/referee_ui_sender.c
     User_File/Device/Peripheral/Referee/vtm_26.c)
@@ -236,6 +239,22 @@ else()
         ${H7_CHASSIS_DEVICE_SOURCES}
         User_File/System/Transport/transport_chassis.cpp
         User_File/Task/Control_Task_Chassis.cpp)
+endif()
+
+if(H7_BOARD STREQUAL "GimbalBoard")
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE User_File/Device/Peripheral/IMU/hipnuc.cpp)
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE User_File/Device/Peripheral/IMU)
+endif()
+
+if(H7_BOARD STREQUAL "GimbalBoard")
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        User_File/Device/Peripheral/EricTool/gimbal_tuning.cpp
+        User_File/Device/Peripheral/Vision/vision.cpp
+        User_File/Application/Input/gimbal_input.cpp
+        ${H7_REFEREE_CORE_SOURCES})
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
+        User_File/Device/Peripheral/IMU
+        User_File/Device/Peripheral/Vision)
 endif()
 
 if(H7_APP_CLIENT_UI)
@@ -343,6 +362,7 @@ target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     H7_CAN2_EXTENDED=$<BOOL:${H7_CAN2_EXTENDED}>
     H7_CAN3_EXTENDED=$<BOOL:${H7_CAN3_EXTENDED}>
     H7_HAS_DM_MOTOR=$<NOT:$<STREQUAL:${H7_BOARD},ChassisBoard>>
+    H7_GIMBAL_RATE_INPUT=$<STREQUAL:${H7_BOARD},GimbalBoard>
 )
 
 # Remove wrong libob.a library dependency when using cpp files

@@ -1,17 +1,30 @@
 # Shoot 发射应用开发指南
 
-当前应用控制两台摩擦轮和一台拨弹盘 M3508，复用 DJI Device 的闭环与发送组。
+当前应用复用 DJI Device 的闭环与发送组。正式上板只控制两台摩擦轮，其他配置保留双摩擦轮和拨弹盘。
 应用拥有设备实例、连续目标和事件角目标，ControlTask 负责初始化顺序与 1 ms 调度。
 本文说明当前实现和移植位置；代码片段是现有实现的阅读示例，不是另一套发射控制框架。
+
+## 正式上板图传摩擦轮
+
+正式上板沿用BoardConfig的图传绑定识别两摩擦轮配置。总线CAN1，节点1正转、节点2反转，
+M3508/C620直驱，传动比1。拨弹由下板执行，上板不注册节点8。
+图传F键经Input与RobotCmd发布摩擦轮命令，默认目标25 rad/s（约239转/分钟）。
+调节速度修改Shoot_Config.h的default_friction_speed_rad_s；
+调节达速容差修改friction_ready_tolerance_ratio，默认0.05表示±5%。
+Shoot_FrictionReady()在每1ms更新后提供双轮许可，要求总开关和摩擦轮开启、
+两台驱动均ready且各自有符号逻辑速度误差不超过目标乘容差。没有额外保持时间。
+本许可仅约束图传左键下发，达速前按压取消、长按超差暂停及恢复见[Input指南](../Input/README.md)。
+
+以下拨弹流程及三电机示例适用于保留本地拨弹盘的配置；正式上板反馈enabled/online只考虑双摩擦轮。
 
 ## 文件与框架接口
 
 | 文件/接口 | 职责与调用约定 |
 | --- | --- |
-| [Shoot.h](Shoot.h) | 对外仅提供 Init 与 Update，保持任务调用入口 |
+| [Shoot.h](Shoot.h) | 提供Init、Update与FrictionReady达速查询 |
 | [Shoot.cpp](Shoot.cpp) | 私有设备、命令消费、模式处理和反馈发布 |
 | [Shoot_Config.h](Shoot_Config.h) | 机构角度、默认速度、节点编号和 PID 参考值 |
-| `bool Shoot_Init(void)` | ControlTask 启动时调用一次；三个设备和两个组全部初始化成功返回 true |
+| `bool Shoot_Init(void)` | ControlTask 启动时调用一次；本板拥有的设备与发送组全部初始化成功返回 true |
 | `void Shoot_Update(void)` | 在 RobotCmd_Update 后每 1 ms 调用，反馈每 10 ms 发布 |
 | `BoardConfig_Get().shoot_bus` | 提供硬件总线，机构参数不放入 BoardConfig |
 
@@ -97,7 +110,7 @@ enabled 需要总开关 ON 且三个快照均 ready，不代表摩擦轮已达�
 驱动负责单设备反馈超时与安全输出，应用负责拨弹盘未就绪时取消旧离散动作，
 仍没有任一轮掉线后统一停三台的互锁。
 当前组 Control/RequestEnabled 的返回值被忽略，反馈 enabled 也不证明目标成功发送或执行。
-当前没有有限值参数校验、摩擦轮达速判据、热量/裁判互锁、堵转检测、自动回退或完整发射状态机。
+当前没有有限值参数校验、热量/裁判互锁、堵转检测、自动回退或完整发射状态机。
 这些是新业务的实现位置，不应把现有事件保持误当作完整发射流程。
 
 ## 重新开发时处理哪些函数

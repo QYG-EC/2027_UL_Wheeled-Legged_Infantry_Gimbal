@@ -18,6 +18,8 @@ struct ShootPidConfig
 struct ShootConfig
 {
     float default_friction_speed_rad_s = 25.0f; // 摩擦轮开启且命令速度不为正时的备用输出轴速度。
+    float friction_ready_tolerance_ratio = 0.05f; // 双轮速度相对误差许可，0.05表示±5%。
+    uint8_t gimbal_friction_left_id = 1U; // 正式上板左摩擦轮节点。
     float default_rate_hz = 10.0f; // 连发未提供正射速时的备用弹数/s。
     float one_bullet_angle_rad = DegToRad(36.0f); // 拨弹盘输出轴每个弹位的机械角，用于事件和射速换算。
     float reverse_speed_rad_s = DegToRad(-360.0f); // 反转模式未提供非零速度时的备用角速度。

@@ -39,4 +39,14 @@ bool System_IMU_IsOnline(); ///< 有效 INS 输出链路活性；不替代控制
  */
 void System_IMU_Publish_State();
 
+#if H7_GIMBAL_RATE_INPUT
+/**
+ * @brief 初始化BoardConfig指定的外置随动惯性接收，保留板载姿态链路。
+ * @return 串口初始化、Daemon注册及Device绑定均成功时为true；不表示已经收到反馈。
+ */
+bool System_Gimbal_IMU_Init();
+/** @brief 控制任务读取新的外置完整快照，以实际接收时间发布独立姿态Topic。 */
+void System_Gimbal_IMU_Update();
+#endif
+
 #endif

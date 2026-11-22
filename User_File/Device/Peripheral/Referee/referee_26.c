@@ -27,6 +27,7 @@ static uint16_t ui_robot_id;
 static uint32_t ui_robot_id_ms;
 static uint8_t ui_robot_id_received;
 static referee_ui_snapshot_t ui_snapshot;
+static referee_keyboard_snapshot_t keyboard_snapshot;
 
 /* 已校验 CRC 的已知命令必须匹配该命令的固定载荷长度；未知命令只计链路在线。 */
 static uint8_t JudgeStoreFrame(const uint8_t *frame, uint16_t payload_length)
@@ -40,6 +41,20 @@ static uint8_t JudgeStoreFrame(const uint8_t *frame, uint16_t payload_length)
         break
     switch (command_id)
     {
+    case 0x0304U:
+        if (payload_length != 12U) return FALSE;
+        // 协议为小端；逐字段复制，不依赖编译器的结构体填充。
+        memcpy(&keyboard_snapshot.mouse_x, frame + DATA_Offset, 2U);
+        memcpy(&keyboard_snapshot.mouse_y, frame + DATA_Offset + 2U, 2U);
+        memcpy(&keyboard_snapshot.mouse_z, frame + DATA_Offset + 4U, 2U);
+        keyboard_snapshot.mouse_left = frame[DATA_Offset + 6U];
+        keyboard_snapshot.mouse_right = frame[DATA_Offset + 7U];
+        memcpy(&keyboard_snapshot.keyboard, frame + DATA_Offset + 8U, 2U);
+        memcpy(&keyboard_snapshot.reserved, frame + DATA_Offset + 10U, 2U);
+        keyboard_snapshot.received_ms = HAL_GetTick();
+        ++keyboard_snapshot.sequence;
+        keyboard_snapshot.received = TRUE;
+        break;
         JUDGE_COPY(ID_game_status, GameState, LEN_game_status);
         JUDGE_COPY(ID_game_result, GameResult, LEN_game_result);
         JUDGE_COPY(ID_game_robot_HP, GameRobotHP, LEN_game_robot_HP);
@@ -170,6 +185,7 @@ referee_info_t *RefereeInit(UART_HandleTypeDef *referee_usart_handle)
     referee_rx_length = 0U;
     ui_robot_id_received = FALSE;
     memset(&ui_snapshot, 0, sizeof(ui_snapshot));
+    memset(&keyboard_snapshot, 0, sizeof(keyboard_snapshot));
     referee_uart = referee_usart_handle;
     UART_Init(referee_usart_handle, RefereeRxCallback);
 
@@ -195,7 +211,7 @@ uint8_t RefereeTrySend(uint8_t *send, uint16_t tx_len)
            UART_Transmit_Data(referee_uart, send, tx_len) == HAL_OK;
 }
 
-uint8_t RefereeReadUIRobotId(uint16_t *robot_id)
+uint8_t RefereeReadRobotId(uint16_t *robot_id)
 {
     if (robot_id == NULL || referee_uart == NULL)
         return FALSE;
@@ -206,7 +222,16 @@ uint8_t RefereeReadUIRobotId(uint16_t *robot_id)
     const uint32_t age_ms = HAL_GetTick() - ui_robot_id_ms;
     __DMB();
     __set_PRIMASK(mask);
-    if (!received || age_ms >= 500U || !RefereeUIRobotIdIsValid(id))
+    if (!received || age_ms >= 500U)
+        return FALSE;
+    *robot_id = id;
+    return TRUE;
+}
+
+uint8_t RefereeReadUIRobotId(uint16_t *robot_id)
+{
+    uint16_t id;
+    if (robot_id == NULL || !RefereeReadRobotId(&id) || !RefereeUIRobotIdIsValid(id))
         return FALSE;
     *robot_id = id;
     return TRUE;
@@ -230,6 +255,19 @@ uint8_t RefereeReadUISnapshot(referee_ui_snapshot_t *snapshot)
 }
 
 uint8_t RefereeIsEnabled(void) { return referee_uart != NULL; }
+
+uint8_t RefereeReadKeyboardSnapshot(referee_keyboard_snapshot_t *snapshot)
+{
+    if (snapshot == NULL || referee_uart == NULL)
+        return FALSE;
+    const uint32_t mask = __get_PRIMASK();
+    __disable_irq();
+    const uint8_t received = keyboard_snapshot.received;
+    if (received) { *snapshot = keyboard_snapshot; }
+    __DMB();
+    __set_PRIMASK(mask);
+    return received;
+}
 
 uint8_t RefereeIsOnline(void)
 {

@@ -97,6 +97,10 @@ static HAL_StatusTypeDef UART_Start_Receive_ToIdle(Struct_UART_Manage_Object *ma
         return HAL_ERROR;
     }
 
+    // HAL启动末尾检查ReceptionType再开启IDLEIE；两步间被错误中断抢占会遗留空闲中断。
+    // 保持启动与半传输屏蔽原子完成，退出时恢复调用方原有中断状态。
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
     HAL_StatusTypeDef Status = HAL_UARTEx_ReceiveToIdle_DMA(
         manage->UART_Handler,
         manage->Rx_Buffer_Active,
@@ -105,6 +109,7 @@ static HAL_StatusTypeDef UART_Start_Receive_ToIdle(Struct_UART_Manage_Object *ma
     {
         __HAL_DMA_DISABLE_IT(manage->UART_Handler->hdmarx, DMA_IT_HT);
     }
+    __set_PRIMASK(primask);
     return Status;
 }
 
@@ -120,6 +125,8 @@ static bool UART_Restart_Receive(Struct_UART_Manage_Object *manage)
         return false;
     }
 
+    // 先消费本轮恢复请求；启动接收后错误中断可能立刻置位，不能在函数末尾覆盖它。
+    manage->Rx_Restart_Pending = false;
     UART_HandleTypeDef *huart = manage->UART_Handler;
     manage->Rx_Buffer_Active = nullptr;
 
@@ -143,7 +150,6 @@ static bool UART_Restart_Receive(Struct_UART_Manage_Object *manage)
         return false;
     }
 
-    manage->Rx_Restart_Pending = false;
     manage->Rx_Restart_Count++;
     return true;
 }
@@ -212,6 +218,14 @@ void UART_TIM_1ms_Recover_PeriodElapsedCallback(void)
     }
     Retry_Divider = 0U;
 
+    UART_TIM_10ms_Recover_PeriodElapsedCallback();
+}
+
+/**
+ * @brief 在10 ms任务周期中处理待恢复的接收通道，不在中断上下文调用。
+ */
+void UART_TIM_10ms_Recover_PeriodElapsedCallback(void)
+{
     Struct_UART_Manage_Object *const Manage_List[] = {
         &USART1_Manage_Object,
         &USART2_Manage_Object,
@@ -275,6 +289,41 @@ uint8_t UART_Transmit_Data(UART_HandleTypeDef *huart, uint8_t *Data, uint16_t Le
     HAL_StatusTypeDef status = HAL_UART_Transmit_DMA(huart, manage->Tx_Buffer, Length);
     __DMB();
     manage->Tx_Submitting = false;
+    return status;
+}
+
+bool UART_InitInterruptRx(UART_HandleTypeDef *huart, UART_Callback callback)
+{
+    Struct_UART_Manage_Object *manage = UART_Get_Manage_Object(huart);
+    if (manage == nullptr || huart->hdmarx != nullptr) return false;
+    manage->Callback_Function = callback;
+    return HAL_UART_Receive_IT(huart, manage->Rx_Buffer_0, 1U) == HAL_OK;
+}
+
+extern "C" void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    Struct_UART_Manage_Object *manage = UART_Get_Manage_Object(huart);
+    if (manage == nullptr || huart->hdmarx != nullptr || manage->Callback_Function == nullptr) return;
+    uint8_t byte = manage->Rx_Buffer_0[0];
+    (void)HAL_UART_Receive_IT(huart, manage->Rx_Buffer_0, 1U);
+    manage->Callback_Function(&byte, 1U);
+}
+
+uint8_t UART_Transmit_Nonblocking(UART_HandleTypeDef *huart, uint8_t *data, uint16_t length)
+{
+    if (huart == nullptr || data == nullptr || length == 0U || length > UART_BUFFER_SIZE) return HAL_ERROR;
+    if (huart->hdmatx != nullptr) return UART_Transmit_Data(huart, data, length);
+    Struct_UART_Manage_Object *manage = UART_Get_Manage_Object(huart);
+    if (manage == nullptr) return HAL_ERROR;
+    const uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    uint8_t status = HAL_BUSY;
+    if (huart->gState == HAL_UART_STATE_READY)
+    {
+        memcpy(manage->Tx_Buffer, data, length);
+        status = HAL_UART_Transmit_IT(huart, manage->Tx_Buffer, length);
+    }
+    __set_PRIMASK(primask);
     return status;
 }
 

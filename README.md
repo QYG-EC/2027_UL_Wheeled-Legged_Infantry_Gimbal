@@ -59,6 +59,9 @@ SystemView/                 SEGGER SystemView 与 RTT
 sysid/                      系统辨识数据、脚本与报告
 ```
 
+正式上板的[云台控制](User_File/Application/Gimbal/README.md)使用外置惯性反馈、板间遥控速度及串口10键鼠接口；两轴控制配置已开启，惯性闭环仍待实机验收。
+串口1通过[24字节视觉接口](User_File/Device/Peripheral/Vision/README.md)接收目标并回传姿态。操作者请求自瞄后，有效目标接管云台绝对角控制。完整行为见[自瞄控制说明](docs/AUTOAIM_CONTROL.md)。
+
 ## 通信与外设 BSP
 
 BSP 以外设管理对象和接口函数承接 HAL，设备层通过注册回调与收发接口使用总线资源。
@@ -190,9 +193,9 @@ EricTool 的 USB/UART 解析均只读取回调传入的缓冲区及有效长度�
 - `Topic<T>` 使用 Latest-Value 语义，传递连续状态和控制目标；`Publisher`/`Subscriber` 只是其无分配访问封装。
 - `EventQueue<T,N>` 使用固定容量 FIFO，传递不能被最新值覆盖的离散事件；队列满时拒绝新事件并累计溢出次数。
 
-业务类型和唯一静态通道统一定义在 [MessageCenter](User_File/System/MessageCenter)。`INS_State_Topic` 由 BMI088 链路发布，云台读取最新姿态；RobotCmd 通过 Output 发布 Gimbal、Chassis、Shoot 连续命令并汇总反馈，底盘命令在云台板由固定 Transport 送往底盘板 Topic。单发和三连发通过固定容量 `ShootEvent` FIFO 传递。完整 API、并发语义、通道所有权、示例和验证清单见 [Message Center 专篇](User_File/System/MessageCenter/README.md)。
+业务类型和唯一静态通道统一定义在 [MessageCenter](User_File/System/MessageCenter)。`INS_State_Topic`由BMI088链路发布，正式上板云台从独立`Gimbal_INS_State_Topic`读取外置随动姿态；RobotCmd 通过 Output 发布 Gimbal、Chassis、Shoot 连续命令并汇总反馈，底盘命令在云台板由固定 Transport 送往底盘板 Topic。单发和三连发通过固定容量 `ShootEvent` FIFO 传递。完整 API、并发语义、通道所有权、示例和验证清单见 [Message Center 专篇](User_File/System/MessageCenter/README.md)。
 
-所有正常工作时应持续收到反馈、心跳或数据流的模块优先注册静态 Daemon，只在收到合法数据时 `Feed()`。当前已接入 DM、DJI、S.BUS、有效 INS 输出、双板 Transport 及可选 Referee/VTM；`StatusTask` 每 10 ms（100 Hz）统一 `CheckAll()`，随后调用已编入的 DJI、DM 设备 `ServiceAll()`。Daemon 只负责 liveness，不负责整车停机、清错、重启、安全策略或消息路由。管理器保持 32 个固定槽位，无动态分配；当前静态应用与可选 Referee/VTM 的三板注册数为 17/8/11。电机在线查询与控制门控统一使用 Daemon 即时状态；Topic ReadFresh 仍独立判断业务数据时效，详见 [Daemon 说明](User_File/System/Daemon/README.md)。
+所有正常工作时应持续收到反馈、心跳或数据流的模块优先注册静态 Daemon，只在收到合法数据时 `Feed()`。当前已接入 DM、DJI、S.BUS、有效 INS 输出、双板 Transport 及可选 Referee/VTM；`StatusTask` 每 10 ms（100 Hz）统一 `CheckAll()`，随后调用已编入的 DJI、DM 设备 `ServiceAll()`。Daemon 只负责 liveness，不负责整车停机、清错、重启、安全策略或消息路由。管理器保持 32 个固定槽位，无动态分配；注册数量按当前板型与实际启用设备核对，详见Daemon指南。电机在线查询与控制门控统一使用 Daemon 即时状态；Topic ReadFresh 仍独立判断业务数据时效，详见 [Daemon 说明](User_File/System/Daemon/README.md)。
 
 ### Application
 
@@ -201,13 +204,13 @@ Control_Task 调度顺序、RobotCmd 所有权、Gimbal/Chassis/Shoot 行为和�
 [Application 开发指南](User_File/Application/README.md)。
 
 当前 App 主流程保持“读取输入 → 表达功能许可 → 更新目标 → 计算并提交控制 → 发布反馈”。
-Gimbal 合并姿态捕获条件，并保留恢复后等待新 IMU 目标的要求；Shoot 在模式处理后统一选择拨弹外环与目标；RobotCmd 复用失联和切源时的射击事件清理。设备级掉线保护由 Motor 独立执行，WS2812 保持现有颜色缓存与刷新行为。
+Gimbal采用双轴LQR（Linear Quadratic Regulator，线性二次调节器）惯性反馈与RATE速度积分，两轴独立捕获/恢复；Shoot 在模式处理后统一选择拨弹外环与目标；RobotCmd 复用失联和切源时的射击事件清理。设备级掉线保护由 Motor 独立执行，WS2812 保持现有颜色缓存与刷新行为。
 
 ### 单板与双板
 
 构建目标在编译期确定应用与任务：`SingleBoard` 的 Gimbal、Chassis、Shoot 默认关闭；关闭应用时不编译或调度对应 App，也不发布对应本地应用反馈；关闭 Shoot 时拒绝射击事件；`GimbalBoard` 运行 RobotCmd、Gimbal、Shoot；`ChassisBoard` 运行 Chassis。BoardConfig 只绑定本板硬件，TransportConfig 固定板间总线和报文号。运行时不使用 Router 或动态 Topic 路由。
 
-单板 RobotCmd 的三个 Output 都是 LocalPublisher；云台板的底盘 Output 是 RemotePublisher。`ChassisCmd` 经 CAN 标准 ID `0x141` 到达底盘板本地 Topic，`ChassisFeedback` 经 `0x222` 返回云台板本地 Topic。两者是 8 字节 Classic CAN 最新值，接收任务按实际 RX 时间和序号校验，底盘命令超过 100 ms 变为 `ZERO_FORCE`。INS、Gimbal、Shoot 的 1 kHz 板内路径不经过 Transport。协议和接线见 [双板 Transport](User_File/System/Transport/README.md)。
+单板 RobotCmd 的三个 Output 都是 LocalPublisher；云台板的底盘 Output 是 RemotePublisher。`ChassisCmd`经CAN标准标识`0x81`到达底盘板，`ChassisFeedback`及遥控云台输入共用`0x80`返回上板并由数据域类型区分。这些报文均为8字节Classic CAN连续状态，接收任务按实际 RX 时间和序号校验，底盘命令超过 100 ms 变为 `ZERO_FORCE`。INS、Gimbal、Shoot 的 1 kHz 板内路径不经过 Transport。协议和接线见 [双板 Transport](User_File/System/Transport/README.md)。
 
 ## 可靠性与降级边界
 
@@ -403,3 +406,5 @@ HTML 支持亮/暗主题、搜索、聚焦、关系追踪、三条链的引导�
 浏览器 QA 生成的截图与 receipt 是本地验证证据，不作为图源；交付前检查两种主题、文字和箭头，并运行 `git diff --check`。
 
 </details>
+
+下板移植接口、字段清单及Agent任务见[下板对接文档](docs/LOWER_BOARD_GIMBAL_HANDOFF.md)。

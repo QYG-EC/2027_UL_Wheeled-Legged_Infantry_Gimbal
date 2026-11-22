@@ -19,6 +19,9 @@ struct BoardHardware
     bool indicators;
     bool usb_debug;
     UART_HandleTypeDef *referee_uart; ///< H7_APP_CLIENT_UI 启用时由 System_Init 独占绑定。
+    UART_HandleTypeDef *gimbal_imu_uart = nullptr; ///< 外置惯性接收；为空时沿用板载姿态。
+    UART_HandleTypeDef *gimbal_keyboard_uart = nullptr; ///< 图传0x0304，与裁判解析器共用接收入口。
+    UART_HandleTypeDef *vision_uart = nullptr; ///< V2自瞄串口，仅正式上板绑定。
 };
 
 const BoardHardware &BoardConfig_Get(void);

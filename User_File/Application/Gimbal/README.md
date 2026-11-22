@@ -1,3 +1,151 @@
+# 云台惯性反馈与双轴LQR控制
+
+当前实现以本节、`Gimbal.h`、`Gimbal_Config.h`和源码为准。下方旧教程保留为历史参考，
+其中旧PID（Proportional Integral Derivative，比例积分微分）参数、MIT位置控制和配置字段不再代表当前接口。
+
+## 当前控制链
+
+CH8许可、CH7请求、24字节自瞄协议及全部可调参数见[自瞄控制说明](../../../docs/AUTOAIM_CONTROL.md)。
+
+### 本分支的双轴实时调参
+
+GimbalBoard支持双轴运行时调参。上板以专用调参应答替换USB（Universal Serial Bus，通用串行总线）原三通道姿态输出，
+不再兼容该端口的旧JustFloat/VOFA桥；下板遥控、外置惯性、视觉反馈与正常控制任务继续运行。
+首次使用需要编译并烧录正式上板固件；后续只改MATLAB参数，无须再次编译或烧录。
+
+1. 主控USB直连电脑，关闭占用该串口的旧桥或其他工具；使用当前GimbalBoard/Debug固件。
+2. MATLAB进入仓库`sysid`目录，打开[`gimbal_tune.m`](../../../sysid/gimbal_tune.m)的参数区。
+3. `TUNE_AXIS="pitch"`默认仅更新Pitch，写前查询并保留实际Yaw；`both`/`yaw`按需选择。
+   `MODE="qr"`时修改选中轴Q/R；`MODE="gain"`时直接修改`YAW_K/PITCH_K`。
+   Q是2×2实对称半正定状态权重，R是正标量控制输入权重；Q/R方式需要控制系统工具箱的`dlqr`。
+   前馈数组顺序为重力常数、重力斜率、运动摩擦；单位为N·m、N·m/rad、N·m。
+4. 填写`PORT`，或调用`gimbal_tune("write","COM5")`；Linux可填`/dev/serial/by-id/...`。
+   留空只在恰好一个可用串口时自动选择；USB虚拟串口的115200不改变惯性串口速率。
+   Linux稳定设备路径会先解析为真实节点再交给MATLAB打开；本机直接使用别名路径时，
+   实测同一进程首次查询成功、第二次误报占用，真实节点连续查询正常。
+5. 每次修改后运行`gimbal_tune`，线上仍一次写入全部10个值（未选轴采用查询值）；回读与请求的binary32位值一致后才输出成功。
+   `gimbal_tune("calculate")`仅计算；`gimbal_tune("query")`查询实际参数并导出，不计算Q/R。
+
+成功写入或查询后，`build/gimbal_tuned_parameters.txt`仅包含10行可复制的
+`config.yaw/pitch.<字段> = <数值>f;`。可将最终值填回`Gimbal_Default_Config()`。文件记录最后一次已确认值，复位后应重新查询。
+本工具不写Flash（闪存）、不改变电机使能、不发布运动目标、不修改反馈轴或已有输出边界；
+重启后恢复编译默认值。正在闭环时改参数会直接改变下一周期转矩，不插入斜坡或平滑。
+
+Yaw的Q/R仍使用脚本冻结的1 ms名义模型。Pitch使用用户2026-11-20实测调定的
+K=[9.29481325,1.99631282]，直接作为启动默认值；固件不在线求解Q/R，Q/R未随此K记录。
+这组K源于外置模型的低频两状态近似，其原始验证不等于当前惯性角/电机速度混合反馈已验证。
+正式脚本中的`PITCH_MODEL_SOURCE="motor_legacy"`与模型来源限制保留，qr模式不会拿旧矩阵重算并覆盖冻结值；
+若要重新设计，须部署与反馈来源匹配的模型。默认`gain`模式使用脚本参数区的手填值，默认仅更新Pitch。
+使用`query`读取两轴实际参数。参数应答仅确认固件已接受该组数值。
+
+固件在ControlTask更新前校验全部10个有限参数，要求角度增益、速度增益及摩擦非负，
+允许重力项为负；整组通过后才更新两轴，拒绝时两轴均不变。
+目标、ready状态、转矩限幅和位置限位保留。未新增增益上限、心跳或掉线停机逻辑。
+主机应答等待默认2秒，超时只报结果未确认、不重发、不回滚；参数可能已生效，需显式查询。
+固件发送忙/失败时也不重发；旧导出文件不会因失败请求而更新。
+
+线上协议为固定56字节、小端：`GT01`(4)、操作(1)、状态(1)、保留零(2)、序号(4)、
+Yaw/Pitch各5个float(40)、CRC（Cyclic Redundancy Check，循环冗余校验）32/ISO-HDLC(4)。
+校验覆盖前52字节；操作1写入、2查询，应答操作加0x80；状态0成功、1参数拒绝、2未初始化。
+字段顺序为`k_angle/k_speed/gravity_constant/gravity_linear/moving_friction`，Yaw在前。
+拆包在Device中拼接，坏帧丢弃并寻找下一帧头；接收容量512字节，超出容量的字节丢弃。
+仅支持一个主机、一个在途请求，不提供请求排队。中断只复制字节，TransportTask解析/发送，
+ControlTask整体生效并提交实际参数应答。无新任务或动态分配，模块静态数据约0.7KiB，
+TransportTask临时字节缓冲568字节；现有任务栈8KiB，实际运行耗时与栈余量仍需实机验证。
+
+上板控制任务依次执行：板间接收 → 外置惯性发布 → GimbalInput输入适配 → RobotCmd仲裁发布 → Gimbal更新。
+协议解析归Device；控制目标只由RobotCmd发布；Gimbal拥有设备和私有姿态目标。
+不新增任务、动态注册或动态内存。
+
+两轴采用同一LQR（Linear Quadratic Regulator，线性二次调节器）计算路径，
+以惯性角度误差和选定速度反馈计算转矩，经达妙MIT（Massachusetts Institute of Technology，麻省理工学院）
+协议的零位置增益、零速度增益纯转矩接口输出。
+Pitch位置取外置惯性单元的`−pitch`，应用正方向为抬头；控制和发布的速度均取
+`电机角速度/motor_per_axis`。Yaw控制和发布速度也取其自身电机速度除以传动比，
+两轴均不使用陀螺速度。gyro轴配置仅保留原始惯性映射，
+视觉反馈仅包含姿态角与采样时间，不包含角速度。
+Yaw左转时`yaw`、`gyro Z`及电机位置均增大，沿用正向坐标；当前两轴控制配置均已开启。
+
+`Struct_Gimbal_Config`分别持有Yaw/Pitch的`Struct_Gimbal_Axis_Config`：电机配置、
+角度/角速度轴与符号、转矩符号、LQR增益、前馈及既有输出约束。
+Yaw与Pitch分别处理使能、ready和恢复；关闭或未就绪的Yaw不会阻塞Pitch。
+
+## 命令与目标
+
+- `DISABLED`：请求失能。
+- `LOCK`：切入时捕获当前惯性姿态；保持该目标。
+- `IMU`：角度字段为应用坐标绝对rad，速度字段为rad/s参考速度；就绪及恢复后直接应用当前有效绝对目标。
+- `RATE`：速度字段为rad/s，每个1ms周期执行`target += speed * 0.001`，不是每个输入包只积分一次。
+
+手动模式两轴首次就绪与恢复分别捕获当前姿态；绝对角模式直接应用当前有效目标。
+自瞄退出从实测姿态接回手动，RATE来源之间切换继续沿用私有目标；
+键鼠数据失效时由Input输出RATE零速度，因此保持最后目标，不切LOCK重新捕获。
+Yaw用最短角误差，积分目标在±π折返。Pitch保持有限行程角度误差。
+
+## 转矩与前馈
+
+反馈项为`torque_sign * (k_angle * angle_error + k_speed * (reference_speed - measured_speed))`，
+其中Yaw/Pitch速度均为各自电机速度除以传动比。电机位置不替代惯性角度反馈；等效电机目标由`motor_position + motor_per_axis * angle_error`计算，
+用于闭环位置目标限幅与经验前馈。裁剪后的惯性目标会写回私有积分量，
+因此持续向外操作不会积累超出行程的目标。前馈为
+`gravity_constant + gravity_linear * effective_motor_target + moving_friction * sign(reference_motor_speed)`，
+参考电机速度为零时运动摩擦项为零；不加入误差积分或平滑项。
+
+Pitch从`Gimbal_Default_Config()`装载：K=[9.29481325,1.99631282]、
+G=0.210217638139−0.714052927197θ、运动摩擦0、到位辅助B=0.15 N·m，θ为等效电机目标角。
+静止参考速度为零时，到位辅助为`torque_sign * B * clamp(angle_error/(2°),−1,1)`；运动参考时为零，
+总输出仍使用既有转矩限幅。B为轴配置`static_friction`，默认零，仅Pitch配为0.15；
+不扩展十参数调参协议，运行时K及原有前馈仍可改，复位后恢复编译值。
+统一默认值后的正式闭环尚未实机验收；前馈在电机坐标中沿用固定底座实验约定，不代表任意底座姿态下已验证的重力模型。
+Yaw当前1 ms离散增益K=[9.89562444,0.469133869]，离线权重Q=diag([100,0.05])、R=1，运动摩擦0.14 N·m。
+
+重力常数/线性项均为0，总输出沿用±3 N·m；25 N·m仅为协议编码量程。
+前馈直接复用本模块`moving_friction * sign(reference_motor_speed)`，不是把实验命令的负W符号写入配置。
+RATE参考速度或IMU命令的参考速度可驱动此项，参考速度为零时为零；不新增任务、协议或另一套控制器。
+这组增益来自固定底座、电机反馈实验，尚未验证正式惯性反馈下的跟踪与稳定性。
+本轮按双轴联调要求设置`yaw.control_enabled=true`；首次上板必须先核对惯性反馈与实际转矩方向，再验证闭环，不能把参数接入视为实机验收。
+
+## 硬件与保留约束
+
+| 轴 | 总线 | 发送/反馈标识 | 位置/速度/转矩协议量程 |
+| --- | --- | --- | --- |
+| Pitch | CAN1 | 0x60 / 0x70 | ±12.5 rad / ±30 rad/s / ±50 N·m |
+| Yaw | CAN2 | 0x61 / 0x71 | ±3.14159 rad / ±30 rad/s / ±25 N·m |
+
+两轴反馈状态码均为实测失能6/使能7；两轴控制配置已开启，正式惯性闭环仍待实机验收。
+Yaw CAN2、Pitch CAN1的硬件绑定由`User_Config/Board/gimbal_board_config.cpp`维护，应用配置通过BoardConfig取用。
+协议转矩范围不是额定/峰值转矩。配置`reverse`作用于驱动逻辑坐标，
+`angle_sign/gyro_sign`作用于惯性数据，`torque_sign`决定应用反馈项的输出方向，不可混淆。
+
+保留用户确认的惯性数据20ms时效、驱动掉线保护和转矩限幅。用户已明确限幅指闭环位置目标，不要求失能或制动。Pitch目标范围为±20°（±0.34906585 rad），
+按电机机械零位判断；目标裁剪后回写惯性积分量，目标到边界时将向外参考速度置零，
+避免速度反馈项和运动摩擦前馈继续向外推动。电机实测位置达到同侧边界后也停止向外积分；
+反向指令在下一控制周期直接生效，不锁存、不要求切换使能。限位不会触发电机失能，
+继续由惯性反馈闭环维持有限目标；反馈过期/驱动掉线等原有保护仍保持。
+23°仅保留为此前机构行程背景，不添加23°失能或制动；未加入实验速度停限或主机心跳。
+
+外置姿态走独立`Gimbal_INS_State_Topic`，不回退板载姿态；非上板配置仍可显式选择板载源。
+反馈100Hz发布；`yaw_ready/pitch_ready`分别表示本轴控制已就绪，
+`enabled`只要求参与控制的轴均就绪，不代表CAN报文或设备动作已被确认。
+
+## 在同结构机器人上复用
+
+本工程保持现有DM、DJI设备驱动与Application/Device/System/BSP分层，没有新增通用电机接口层。
+本机云台两轴使用DM驱动；更换该驱动已支持的电机型号，主要修改Gimbal_Config.h中的：
+
+- 每轴电机总线、发送/反馈标识、协议量程、反馈状态码与reverse。
+- 惯性角度/角速度轴与方向，torque_sign、机构传动比例motor_per_axis。
+- 控制增益、重力/运动摩擦前馈、转矩约束及机构位置目标范围。
+
+CAN物理资源仍由BoardConfig维护，鼠标灵敏度由GimbalInput配置维护。
+惯性源更换时Device解析新协议，System适配为已有INS_State（rad、rad/s与本地接收时间）；
+Gimbal仍消费相同Topic，不修改控制方法、仲裁或任务调度。键鼠来源更换则调整Device和Input适配。
+本次没有增加云台DM/DJI跨品牌自动切换；DJI仍使用工程已有驱动和应用组织方式。
+同结构可复用不代表原控制增益可直接沿用，电机/惯量/负载及反馈延迟变化后应重新核对增益。
+更换设备需提供相应驱动实际支持的控制模式、物理量及编码参数，不能只替换型号字符串。
+
+## 历史实现与迁移例程（不适用于当前配置）
+
 # 双达妙云台
 
 云台由统一 ControlTask 以 1 kHz 调度，两轴均使用现有 `Class_DMMotor` 和 MIT 模式。
@@ -57,7 +205,7 @@ ControlTask 等待 1 ms 线程标志，控制算法运行在任务上下文。�
 | 通道 | 写入者 → 读取者 | 使用方式 |
 | --- | --- | --- |
 | `Gimbal_Command_Topic` | RobotCmd → Gimbal | `ReadWithMeta()` 取得命令、有效标志及发布序号；连续目标只保留最新值 |
-| `INS_State_Topic` | System IMU → Gimbal | `ReadFresh(ins, 10000U)` 检查最多 10 ms 的状态；角度 rad、角速度 rad/s |
+| `INS_State_Topic` | System IMU → Gimbal | `ReadFresh(ins, 20000U)` 检查最多 20 ms 的状态；角度 rad、角速度 rad/s |
 | `Gimbal_Feedback_Topic` | Gimbal → RobotCmd/其他消费者 | 每 10 个控制周期 `Publish()`；反馈姿态来自 INS，不是电机编码器位置 |
 
 ### 命令字段与模式
@@ -91,7 +239,7 @@ IMU 模式的角速度前馈。电机编码器零位与 INS 零位不是同一�
 ```cpp
 const auto message = MessageCenter::Gimbal_Command_Topic.ReadWithMeta(); // 一次取得命令与有效标志/序号；这里没有检查命令年龄，失联许可由 Input/RobotCmd 管理。
 INS_State ins{}; // 本周期 INS 快照；读取失败时变量可能保留旧值，因此使用前必须检查 ins_valid。
-const bool ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 10000U);
+const bool ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 20000U);
 ```
 
 反馈由云台在固定分频时发布，消费者可使用
@@ -147,7 +295,7 @@ const bool ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 10000U);
 `Gimbal_Init()` 不发送使能；收到活动模式后才启动就绪流程。现有 RobotCmd 启动默认
 发布 LOCK，因此打开云台编译选项后会自动进入此流程，不能把示例参数当作上板标定结果。
 
-- INS 必须不超过 10 ms；两轴运动反馈必须小于 100 ms，在线判断不等待 StatusTask。INS 发布端拒绝非有限姿态或角速度。
+- INS 必须不超过 20 ms；两轴运动反馈必须小于 100 ms，在线判断不等待 StatusTask。INS 发布端拒绝非有限姿态或角速度。
 - 云台每周期只读取一次命令、INS 与两轴快照，按初始化、命令模式和 INS 有效性统一表达功能许可，再更新目标并计算控制。电机 fault/ready 不再作为 App 的停机准入条件，由驱动各自保护输出；本地许可变化在下一控制周期的快照中反映，协议使能仍以反馈为准。
 - `Gimbal_GetStatus()` 根据初始化结果、当前命令、INS 新鲜度和两轴 `ready/fault` 给出 DISABLE、ENABLING、READY、FAULT 或 CONFIG_ERROR；状态只用于观察，不驱动恢复流程。CAN 软件周期槽是否接受目标不改变云台状态。
 - DMMotor 的 `RequestEnabled()` 处理首次请求和状态边沿：`false→true` 立即尝试一次 Enable，不主动发布安全目标；首次 `false` 或 `true→false` 立即尝试发布安全目标并提交一次 Disable。相同状态重复请求不执行收发；存在待提交项时返回 `false`。云台在功能获许可时持续更新目标，DMMotor 的 `SetXXX()` 在未 ready 时自动安全化。
@@ -767,7 +915,7 @@ Enum_Gimbal_Status Gimbal_GetStatus(void)
 ```cpp
 void Gimbal_Update(void)
 {
-    ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 10000U); // INS 新鲜度门限为 10 ms。
+    ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 20000U); // INS 新鲜度门限为 20 ms。
     const TopicSnapshot<GimbalCmd> message = MessageCenter::Gimbal_Command_Topic.ReadWithMeta();
     command = message.valid ? message.data : GimbalCmd{}; // 无有效发布时采用默认 DISABLED。
     snapshot = yaw_motor.GetFeedbackSnapshot(); // 本周期只读一次，许可变化最迟在下一周期反映为 ready。
@@ -1028,7 +1176,7 @@ bool Gimbal_Init(const Struct_Gimbal_Config& requested)
     motor_config.outer_loop = DJI_MOTOR_SPEED_LOOP;
     motor_config.gear_ratio = 1.0f; // 本例假定 GM6020 直接驱动 Yaw。
     motor_config.reverse = config.yaw.reverse;
-    motor_config.feedback_timeout_ms = 20; // 电机反馈超时由驱动判断，与 INS 的 10 ms 独立。
+    motor_config.feedback_timeout_ms = 20; // 电机反馈超时由驱动判断，与 INS 的 20 ms 独立。
     motor_config.speed_pid.K_P = 100.0f; // 仅演示速度环配置，单位为协议指令/(rad/s)，必须实机整定。
     motor_config.speed_pid.K_I = 0.0f;
     motor_config.speed_pid.K_D = 0.0f;
@@ -1092,7 +1240,7 @@ Enum_Gimbal_Status Gimbal_GetStatus(void)
 ```cpp
 void Gimbal_Update(void)
 {
-    ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 10000U); // INS 新鲜度门限为 10 ms。
+    ins_valid = MessageCenter::INS_State_Topic.ReadFresh(ins, 20000U); // INS 新鲜度门限为 20 ms。
     const TopicSnapshot<GimbalCmd> message = MessageCenter::Gimbal_Command_Topic.ReadWithMeta();
     command = message.valid ? message.data : GimbalCmd{}; // 无有效发布时采用默认 DISABLED。
     snapshot = yaw_motor.GetMotionSnapshot(); // 本周期只读一次，许可变化最迟在下一周期反映为 ready。
@@ -1120,7 +1268,7 @@ void Gimbal_Update(void)
 ### 开发后的检查顺序
 
 先验证接口可编译、输入有效性、限幅和停机路径，再验证硬件。
-至少覆盖初始化失败、INS 超过 10 ms、电机未就绪/离线、DISABLED、LOCK 切换、
+至少覆盖初始化失败、INS 超过 20 ms、电机未就绪/离线、DISABLED、LOCK 切换、
 IMU 新目标及恢复后旧目标不重放。检查命令静止和同值重新发布两种情况。
 固件构建按所改板型执行：
 

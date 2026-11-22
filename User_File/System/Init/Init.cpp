@@ -17,9 +17,12 @@
 #include "dvc_erictool.h"
 #include "sys_debug.h"
 #include "sys_imu.h"
+#if H7_GIMBAL_RATE_INPUT
+#include "vision.h"
+#endif
 #include "sys_timestamp.h"
 #include "usart.h"
-#if H7_CLIENT_UI
+#if H7_CLIENT_UI || H7_GIMBAL_RATE_INPUT
 #include "referee_26.h"
 #endif
 
@@ -68,6 +71,14 @@ extern "C" void System_Init(void)
         &huart6, &huart7, &huart8, &huart9, &huart10};
     for (auto* uart : uarts)
     {
+#if H7_GIMBAL_RATE_INPUT
+        if (uart == hardware.gimbal_imu_uart || uart == hardware.gimbal_keyboard_uart ||
+            uart == hardware.vision_uart)
+        {
+            // 专用设备在下方唯一绑定，避免先启动空回调再重启同一接收DMA。
+            continue;
+        }
+#endif
 #if H7_CLIENT_UI
         if (uart == hardware.referee_uart)
         {
@@ -80,6 +91,14 @@ extern "C" void System_Init(void)
 #endif
         UART_Init(uart, nullptr);
     }
+#if H7_GIMBAL_RATE_INPUT
+    (void)System_Gimbal_IMU_Init();
+    (void)RefereeInit(hardware.gimbal_keyboard_uart);
+    if (!Vision_Init(hardware.vision_uart))
+    {
+        System_Init_RecordFailure(SYSTEM_INIT_FAILURE_VISION, SYSTEM_INIT_DEGRADED);
+    }
+#endif
 
     if (hardware.imu)
     {

@@ -185,7 +185,7 @@ void ClientUI_Update(void)
     if (now_us < view.fire_mode_timestamp_us || now_us - view.fire_mode_timestamp_us > ClientUIConfig::kFireModeMaxAgeUs)
         view.fire_mode = Enum_Client_UI_FireMode::Unknown;
     const uint32_t tick_ms = HAL_GetTick();
-    view.target_detected &= tick_ms - view.target_received_ms <= ClientUIConfig::kTargetMaxAgeMs;
+    // 目标时效由输入仲裁统一判定；界面沿用快照时效，不额外叠加100ms门限。
     if (Expired(view.autoaim_timestamp_us, now_us))
         view.autoaim = Enum_Client_UI_AutoAim::Unknown;
     else if (view.autoaim == Enum_Client_UI_AutoAim::Active && !view.target_detected)

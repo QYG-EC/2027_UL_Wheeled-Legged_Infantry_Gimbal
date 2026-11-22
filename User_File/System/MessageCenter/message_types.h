@@ -16,6 +16,7 @@ enum class GimbalMode : uint8_t
     DISABLED = 0,
     IMU,
     LOCK,
+    RATE, ///< rad/s目标每个控制周期积分；角度字段在此模式下不使用。
 };
 
 enum class ShootMode : uint8_t
@@ -59,8 +60,8 @@ struct INS_State
     float gyro_z_rad_s = 0.0f;
 };
 
-/** 两轴目标均为 INS 姿态 rad；速度字段为 IMU 模式的 rad/s 前馈。
- * LOCK 捕获当前姿态并忽略目标字段；自动恢复后 IMU 需发布新目标。
+/** 两轴目标均为应用惯性姿态 rad；速度字段为 IMU 前馈或 RATE 积分输入。
+ * LOCK 捕获当前姿态并忽略目标字段；自动恢复后 IMU 重新应用当前有效绝对目标。
  */
 struct GimbalCmd
 {
@@ -69,6 +70,15 @@ struct GimbalCmd
     float yaw_speed_rad_s = 0.0f;
     float pitch_speed_rad_s = 0.0f;
     GimbalMode mode = GimbalMode::DISABLED;
+};
+
+/** 下板遥控生成的云台目标角速度；正号为 Yaw 左转、Pitch 抬头。 */
+struct GimbalRateInput
+{
+    float yaw_speed_rad_s = 0.0f;
+    float pitch_speed_rad_s = 0.0f;
+    bool enabled = false;
+    bool autoaim_requested = false; ///< CH8许可下的CH7自瞄请求。
 };
 
 struct ChassisCmd
@@ -90,7 +100,7 @@ struct ShootCmd
     LoaderMode loader_mode = LoaderMode::STOP;
 };
 
-/** 姿态来自 INS；enabled 表示云台功能获许可且两轴均 ready，不表示 CAN 目标已被硬件发送。
+/** 姿态采用配置的惯性轴及符号；enabled表示功能获许可且参与控制的轴均ready。
  * gyro 轴由云台配置选择；INS 无效时姿态/速度清零，调用者须检查 ins_valid。
  */
 struct GimbalFeedback
@@ -101,6 +111,8 @@ struct GimbalFeedback
     float pitch_speed_rad_s = 0.0f;
     bool ins_valid = false;
     bool enabled = false;
+    bool yaw_ready = false;
+    bool pitch_ready = false;
 };
 
 struct ChassisFeedback
@@ -119,7 +131,7 @@ struct ShootFeedback
     float friction_right_speed_rad_s = 0.0f;
     float loader_angle_rad = 0.0f;
     float loader_speed_rad_s = 0.0f;
-    bool enabled = false; ///< 摩擦轮和拨弹盘三个 DJI 电机均 ready；OFF 时为 false。
+    bool enabled = false; ///< 本板拥有的 DJI 电机均 ready；正式上板仅双摩擦轮，OFF 时为 false。
     bool online = false;
 };
 

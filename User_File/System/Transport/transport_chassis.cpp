@@ -52,7 +52,8 @@ void SendFeedback(void)
     message.len = TransportProtocol::kPayloadSize;
     if (TransportProtocol::EncodeChassisFeedback(feedback, feedback_sequence,
                                                   message.data) &&
-        CAN_Tx_Perform(&message))
+        // 0x80由多类消息共用，逐帧入队，避免按标识保留最新值的槽相互覆盖。
+        CAN_Tx_Submit(&message))
     {
         ++feedback_sequence;
     }

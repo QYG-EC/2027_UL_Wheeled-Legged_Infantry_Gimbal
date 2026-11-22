@@ -63,6 +63,21 @@ typedef struct
     uint8_t allowance_received;
 } referee_ui_snapshot_t;
 
+/** 0x0304 键鼠完整快照；时间为本板接收时刻，不随读取刷新。 */
+typedef struct
+{
+    int16_t mouse_x;
+    int16_t mouse_y;
+    int16_t mouse_z;
+    uint8_t mouse_left;
+    uint8_t mouse_right;
+    uint16_t keyboard;
+    uint16_t reserved;
+    uint32_t received_ms;
+    uint32_t sequence;
+    uint8_t received;
+} referee_keyboard_snapshot_t;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -92,6 +107,10 @@ void RefereeReceiveData(uint8_t *data, uint16_t length);
  * 未初始化或空指针返回 0 且不修改输出；received 区分未收到与有效零值。
  */
 uint8_t RefereeReadUISnapshot(referee_ui_snapshot_t *snapshot);
+/** @brief 原子复制最新 0x0304；未初始化或未接收返回 0，不修改输出。 */
+uint8_t RefereeReadKeyboardSnapshot(referee_keyboard_snapshot_t *snapshot);
+/** @brief 读取500ms内的0x0201机器人编号，不依赖客户端UI编号范围；失败不修改输出。 */
+uint8_t RefereeReadRobotId(uint16_t *robot_id);
 uint8_t RefereeIsEnabled(void);   ///< 已完成 UART 注册；裁判系统没有协议使能态。
 uint8_t RefereeIsOnline(void);    ///< 最近 500 ms 内解析到过 CRC 合法帧。
 uint8_t RefereeIsDataValid(void); ///< 当前等价于 Online。

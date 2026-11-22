@@ -6,14 +6,12 @@
 
 namespace TransportConfig
 {
-// 固定板间消息方向与标准 CAN ID；CMake 决定编入哪块板，BoardConfig 管硬件接线。
-constexpr BoardId kCommandSource = BoardId::Gimbal;
-constexpr BoardId kCommandTarget = BoardId::Chassis;
-constexpr uint16_t kChassisCmdCanId = TransportProtocol::CanId(
-    kCommandSource, kCommandTarget, MessageId::ChassisCmd);
-constexpr uint16_t kChassisFeedbackCanId = TransportProtocol::CanId(
-    BoardId::Chassis, BoardId::Gimbal, MessageId::ChassisFeedback);
-static_assert(kChassisFeedbackCanId == 0x222U, "fixed feedback CAN ID");
+// 方向决定CAN标识，数据域类型区分同方向消息；板间总线由板型固定绑定。
+constexpr uint16_t kUplinkCanId = GIMBAL_LINK_UPLINK_ID;
+constexpr uint16_t kDownlinkCanId = GIMBAL_LINK_DOWNLINK_ID;
+constexpr uint16_t kChassisCmdCanId = kDownlinkCanId;
+constexpr uint16_t kChassisFeedbackCanId = kUplinkCanId;
+constexpr uint16_t kGimbalRateInputCanId = kUplinkCanId;
 }
 
 /** One fixed CAN link per firmware target; no runtime routing table. */

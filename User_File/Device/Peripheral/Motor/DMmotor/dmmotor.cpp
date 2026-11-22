@@ -127,6 +127,12 @@ void Class_DMMotor::FeedbackCallback(FDCAN_HandleTypeDef *callback_hfdcan,
     motor->feedback_daemon.Feed();
 }
 
+void Class_DMMotor::SetFeedbackStateCodes(uint8_t disabled, uint8_t enabled)
+{
+    disabled_state_code = disabled;
+    enabled_state_code = enabled;
+}
+
 /** @brief 仅登记本设备的安全动作，发送和失败补交由 ServiceAll 执行。 */
 void Class_DMMotor::OfflineCallback(void *context)
 {
@@ -264,8 +270,9 @@ Struct_DMMotor_Snapshot Class_DMMotor::GetFeedbackSnapshot() const
     snapshot.feedback = feedback;
     snapshot.online = feedback_daemon.IsOnline();
     snapshot.requested_enabled = requested_enabled;
-    snapshot.actual_enabled = snapshot.feedback.state == 1U;
-    snapshot.fault = snapshot.online && snapshot.feedback.state > 1U;
+    snapshot.actual_enabled = snapshot.feedback.state == enabled_state_code;
+    snapshot.fault = snapshot.online && snapshot.feedback.state != disabled_state_code &&
+                     snapshot.feedback.state != enabled_state_code;
     snapshot.ready = snapshot.requested_enabled && snapshot.online &&
                      snapshot.actual_enabled && !snapshot.fault && feedback_initialized &&
                      !offline_disable_pending;
@@ -281,7 +288,7 @@ bool Class_DMMotor::IsOnline() const
 
 bool Class_DMMotor::IsEnabled() const
 {
-    return feedback.state == 1U;
+    return GetFeedbackSnapshot().actual_enabled;
 }
 
 bool Class_DMMotor::IsDataValid() const

@@ -46,6 +46,11 @@ struct Struct_DMMotor_Snapshot
 class Class_DMMotor
 {
 public:
+    /** @brief 初始化前显式配置失能/使能状态码，保留feedback.state原始值。
+     * @param disabled 失能码。 @param enabled 使能码；其余状态仍作为故障。
+     * @note 默认0/1；仅为用户明确指定的反馈编码设置，不自动推断。
+     */
+    void SetFeedbackStateCodes(uint8_t disabled, uint8_t enabled);
     /** 初始化 CAN 参数、反馈回调，并把在线守护器注册到 DaemonManager。 */
     bool Init(FDCAN_HandleTypeDef *hfdcan,
               uint8_t can_id,
@@ -107,6 +112,8 @@ public:
     Struct_DMMotor_Feedback feedback;
 
 private:
+    uint8_t disabled_state_code = 0U;
+    uint8_t enabled_state_code = 1U;
     static void OfflineCallback(void *context);
     static void FeedbackCallback(FDCAN_HandleTypeDef *hfdcan,
                                  uint32_t id,

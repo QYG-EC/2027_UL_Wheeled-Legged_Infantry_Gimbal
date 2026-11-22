@@ -136,6 +136,13 @@ DMA TX 会先复制
 错误中断只设置恢复标志；`TIM1msTask` 调用
 `UART_TIM_1ms_Recover_PeriodElapsedCallback()` 在任务上下文清理 DMA，并每 10 ms
 重试待恢复的接收通道。就绪缓冲只保证在当前回调期间有效。
+`UART_TIM_10ms_Recover_PeriodElapsedCallback()`提供不分频的同一服务，供没有毫秒任务的
+板型复用已有10 ms任务；两种入口只能选择一个调度，不能在10 ms任务中调用1 ms分频入口。
+
+恢复开始时消费本轮请求，启动后的错误中断可再次请求恢复，成功返回时不能覆盖该请求。
+接收启动及关闭半传输中断使用保存并恢复PRIMASK（Priority Mask Register，中断优先级屏蔽寄存器）
+的短临界区，避免HAL（Hardware Abstraction Layer，硬件抽象层）检查接收模式后被错误中断抢占，
+随后又开启空闲中断而接收已停止。清理旧传输的过程不放入该临界区，原10 ms恢复周期不变。
 
 当前管理对象覆盖 UART5、UART7、USART1/2/3/6/10。其他 UART 若要使用 DMA 路径，必须
 先补齐管理对象、CubeMX DMA 配置和回调映射。
@@ -188,6 +195,12 @@ UART、OSPI 等 DMA 管理对象放入 `.dma_buffer`。修改链接脚本、MPU 
 6. 更新根 CMake 源文件/include、本文档和架构图。
 7. 验证成功、Busy、容量耗尽、HAL 启动失败、错误恢复和重复初始化路径。
 
+### 视觉串口的中断收发
+
+- `UART_InitInterruptRx()`显式启用无接收DMA端口的单字节中断接收，默认初始化行为不变。
+- `UART_Transmit_Nonblocking()`有发送DMA时复用原发送路径，无发送DMA时复制到BSP缓冲并使用中断发送；忙时立即返回。
+- 正式上板使用串口1，运行时波特率和帧格式见[视觉协议](../../Device/Peripheral/Vision/README.md)。
+
 ## 9. 禁止事项
 
 - 不在 Application 中直接绕过 BSP 调用 HAL 收发函数。
@@ -203,3 +216,5 @@ UART、OSPI 等 DMA 管理对象放入 `.dma_buffer`。修改链接脚本、MPU 
 - [Application](../../Application/README.md)
 - [Message Center](../../System/MessageCenter/README.md)
 - [交互式架构图](../../../Assets/Architecture/H7_BSP.html)
+
+UART公开函数使用extern "C"链接约定，C协议解析器与C++设备模块复用同一BSP实现；声明位于bsp_uart.h，不改变接收/发送行为。

@@ -27,7 +27,7 @@
 | Referee | CRC8/CRC16 和完整长度校验通过，已知命令长度正确；未知合法命令只证明链路活性 | 500 ms | Online 不保证每个业务字段已更新 |
 | VTM | 完整 CRC16 合法遥控帧，或 CRC8/CRC16 合法图传链路帧 | 300 ms 暂定 | 需按实机帧周期验证；Online 不代表已实现所有业务载荷 |
 
-Referee/VTM 的 C 解析器通过模块内的薄 C 接口访问静态 C++ Daemon，保持原有 C 编译和解析边界。它们当前未在 System_Init 自动绑定 UART；调用各自 Init 后才注册和 Feed。
+Referee/VTM 的 C 解析器通过模块内的薄 C 接口访问静态 C++ Daemon，保持原有 C 编译和解析边界。正式GimbalBoard由System_Init绑定Referee作为键鼠接收，其他路径按已有UI配置初始化；VTM仍需显式Init。
 
 未来正式接入 Vision 时，应在合法视觉帧后 Feed 独立 Daemon；瞄准目标仍按输入时间戳判断 freshness。当前没有正式 Vision 驱动，不新建占位实现。历史 DBUS 当前不在机器人周期控制链绑定，正式接入时须按同一原则迁移。Buzzer、WS2812、Key、Flash、单次命令接口不因存在对象就注册 Daemon。
 
@@ -38,10 +38,10 @@ Referee/VTM 的 C 解析器通过模块内的薄 C 接口访问静态 C++ Daemon
 | 板型 | DM | DJI | S.BUS | INS | Transport | Referee | VTM | 合计 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | SingleBoard | 2 | 11 | 1 | 1 | 0 | 1 | 1 | 17 |
-| GimbalBoard | 2 | 3 | 1 | 1 | 1 | 0 | 0 | 8 |
+| GimbalBoard | 2 | 3 | 0 | 2 | 1 | 1 | 0 | 9 |
 | ChassisBoard | 0 | 8 | 0 | 0 | 1 | 1 | 1 | 11 |
 
-SingleBoard 默认关闭三个硬件应用；Referee/VTM 默认未初始化，因此实际注册数通常更少。GimbalBoard 不编入 Referee/VTM，ChassisBoard 不配置 INS/S.BUS。
+SingleBoard 默认关闭三个硬件应用；Referee/VTM 默认未初始化，因此实际注册数通常更少。正式GimbalBoard编入Referee核心用于串口10键鼠，不初始化本地S.BUS；板载与外置惯性链路分别注册，因此INS列计2。ChassisBoard不配置INS/S.BUS。
 
 CAN 接收注册器目前总容量为 16，DM/DJI/Transport 共享这个上限；加上当前其他四个独立软件数据源，扩展电机数量时的成功注册上界仍最多 20。DaemonManager 保持 MAX_DAEMONS=32；未来增加模块时重新核算，并对注册失败作显式处理。
 

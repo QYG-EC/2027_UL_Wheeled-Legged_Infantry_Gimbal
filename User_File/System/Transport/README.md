@@ -1,82 +1,98 @@
-# 双板底盘命令与反馈链路
+# 双板固定通信协议
+
+当前协议使用CAN（Controller Area Network，控制器局域网）标准数据帧，1 Mbit/s，固定8字节。
+下板工程Agent的完整字段清单、独立C接口、发送示例和验收要求见
+[下板对接任务](../../../docs/LOWER_BOARD_GIMBAL_HANDOFF.md)。两份源码
+[gimbal_link_protocol.h](gimbal_link_protocol.h)/[gimbal_link_protocol.c](gimbal_link_protocol.c)
+是上下板共用的C99/C++编解码实现，C++的TransportProtocol只做现有业务类型转换。
 
 ## 构建与板级接线
 
-```sh
-cmake --preset SingleBoard && cmake --build --preset SingleBoard
-cmake --preset GimbalBoard && cmake --build --preset GimbalBoard
-cmake --preset ChassisBoard && cmake --build --preset ChassisBoard
-```
-
-所有预设统一生成 `build/<preset>/H7_Framework.elf` 和 `H7_Framework.map`，板型由构建目录区分。
-
-`Debug` / `Release` 预设默认是单板入口（配置缓存中的 `H7_BOARD` 可覆盖）；`SingleBoard` 保留原有
-`H7_APP_GIMBAL`、`H7_APP_CHASSIS`、`H7_APP_SHOOT` 硬件控制开关，
-默认均为 `OFF`。它是安全构建模板；实车须显式开启所需应用，并先核对
-电机接线、方向、量程与控制器标定。
-双板预设在配置时固定其应用开关，不靠运行时 BoardId 选择应用。
-`.ioc` 不再声明默认 FreeRTOS 任务；任务属性和句柄放在用户文件
-`board_tasks_common.c`，各目标任务列表放在各自的 `board_tasks_*.c`。
-`freertos.c` 仅在 USER CODE 区调用 `Board_CreateTasks()`，可随 CubeMX 重新生成。
-板型预设保存在独立的 `CMakeUserPresets.json`，避免生成器重写 `CMakePresets.json` 时丢失。
-
-| 固件 | 本地应用 | 电机 CAN | 板间 CAN |
+| 板型 | 本地应用 | 电机总线 | 板间总线 |
 | --- | --- | --- | --- |
-| GimbalBoard | RobotCmd、Gimbal、Shoot | DM: FDCAN1；Shoot: FDCAN3 | FDCAN2 |
-| ChassisBoard | Chassis | 车轮: FDCAN1；转向: FDCAN2 | FDCAN3 |
+| GimbalBoard | RobotCmd、Gimbal、Shoot | Pitch CAN1、Yaw CAN2，双摩擦轮CAN1 | CAN2（与Yaw共用） |
+| ChassisBoard | Chassis | 车轮CAN1，转向CAN2 | CAN3 |
 
-两块板的板间 CAN 收发器应连接到同一条 Classic CAN 总线，并核对双方波特率、终端电阻和共地。`BoardConfig` 管外设接线；`TransportConfig` 管固定消息方向和 CAN ID；CMake 选择应用、设备和任务源码。
+沿用当前选中的构建目录验证；不为通信修改自动切换板型、应用或Debug/Release配置。
+BoardConfig绑定硬件，TransportConfig绑定固定方向标识；Transport不是动态Router。
 
 ## 线上格式
 
-`Gimbal(1) -> Chassis(2)` 的 `ChassisCmd(1)`，标准 ID 为
-`(source << 8) | (target << 5) | message = 0x141`。Classic CAN DLC 为 8。
+- 下板→上板：标准标识 **0x80**。
+- 上板→下板：标准标识 **0x81**。
+- 旧0x141/0x222/0x223退出本链路，0x50/0x51不使用，双方必须同时升级。
 
 | 字节 | 内容 |
 | --- | --- |
-| 0 | 8 位序号，逐次发布递增，自然回绕 |
-| 1 | 高 4 位协议版本 `1`；低 4 位 `ChassisMode` |
-| 2–3 | `vx`，有符号小端 int16，单位 0.001 m/s |
-| 4–5 | `vy`，有符号小端 int16，单位 0.001 m/s |
-| 6–7 | `wz`，有符号小端 int16，单位 0.001 rad/s |
+| 0 | 本消息类型的8位序号 |
+| 1 bit7–4 | 版本1 |
+| 1 bit3–2 | 消息类型0、1、2或3 |
+| 1 bit1–0 | 本类型的状态/模式 |
+| 2–7 | 数据 |
 
-非法长度、版本、模式、非有限数值及编码范围外的速度会被拒绝。
-发送使用 CAN BSP 的最新值周期槽；RobotCmd 每 10 个 1 ms 控制周期刷新一次。
-RX 中断只核对 CAN ID、DLC 并复制完整帧和接收时间。控制任务解码和检查序号，
-再按**实际接收时间**发布至本地 `Chassis_Command_Topic`。重复或回退序号不会延长命令有效期。
-Chassis 每 1 ms 读取这个 Topic，距接收超过 100 ms 就进入 `ZERO_FORCE`。
+| 类型 | 方向 | 状态/模式 | 数据 |
+| --- | --- | --- | --- |
+| 0 底盘命令 | 0x81 | 模式0～3 | vx/vy/wz各2字节 |
+| 1 底盘反馈 | 0x80 | bit0 enabled，bit1 online | vx/vy/wz各2字节 |
+| 2 云台遥控输入 | 0x80 | bit0 enabled，bit1 autoaim_requested | Yaw/Pitch各2字节，末2字节为0 |
 
-`Chassis(2) -> Gimbal(1)` 的 `ChassisFeedback(2)` 固定标准 ID 为 `0x222`，
-同为 8 字节 Classic CAN 帧。字节 0 是序号；字节 1 的高 4 位是版本 `1`，
-低 4 位中 bit 0 为 `enabled`、bit 1 为 `online`，bit 2–3 必须为零；
-字节 2–7 分别为 `vx/vy/wz` 有符号小端 int16，单位依次为
-`0.001 m/s`、`0.001 m/s`、`0.001 rad/s`。非法 ID、长度、版本、
-保留位及编码超量程值会被拒绝。Chassis 每约 10 ms 发布一次本地反馈，
-Transport 只在读到新的 Topic 状态时更新 CAN 最新值槽。云台接收中断只复制
-帧与接收时间，控制任务校验后按接收时间发布到本地 `Chassis_Feedback_Topic`；
-`RobotCmd_GetChassisFeedback()` 只返回 100 ms 内的新鲜 Topic 数据。
+所有速度编码为有符号小端int16，平移0.001 m/s、旋转0.001 rad/s。
+Yaw正为左转，Pitch正为抬头；−32.768～32.767是编码容量，不是机构限速。
+C接口拒绝非有限值和编码范围外的值，编码失败不修改输出。帧内不增加软件校验字段。
+例如云台使能、序号1、Yaw+1/Pitch−0.5 rad/s：`01 19 E8 03 0C FE 00 00`。
 
-Transport 是构建期选定的固定协议适配层，不是 Router 或动态 Topic 路由。
-两方向均在有效帧**实际接收时间**距上次合法及时帧超过 100 ms 后重建序号基准；
-持续合法重复/回退序号只维持链路活性，不刷新 Topic 或重建基准。非法帧及延迟处理时已过期的帧也不能延长链路活性。
-现有 8 字节协议没有会话标识，因此超时后新到达的合法旧帧无法与重启板首帧区分；
-只有合法数据流中断后才允许重建基准；当前协议仍未解决会话防重放。
-本协议无 ACK、重传、独立心跳或分包。命令和反馈均为 **latest-value** 连续状态；
-将来不能丢的跨板事件应使用独立 FIFO，本次没有实现跨板事件传输。
-CAN BSP 的离散命令 FIFO 已按 FDCAN1/2/3 分开，一条总线阻塞不影响其他总线，
-但每条总线每次 1 ms 轮询最多尝试一帧。
+## 收发与接口
+
+上板仅向CAN2注册一个0x80回调，整数解析消息类型后分别复制两份完整帧与接收时间；
+控制任务解码，再分别发布`Chassis_Feedback_Topic`与`Remote_Gimbal_Input_Topic`。
+两类各自缓存、各自跟踪序号，连续收到的两类消息不能相互覆盖。
+GimbalInput消费遥控速度，RobotCmd仍是命令唯一发布者，Gimbal按1ms积分目标。
+
+上板底盘命令每10ms更新，使用现有CAN_Tx_Perform最新值槽，标识0x81。
+下板底盘反馈与云台输入各约10ms逐帧提交，标识均为0x80；本仓库下板反馈改用
+现有CAN_Tx_Submit，防止同标识两类帧在最新值槽中互相覆盖。软件接受提交后
+本类型序号才递增；入队不等于硬件发送、对端接收或设备执行。下板遥控业务由下板Agent接入。
+
+本协议只传连续目标/反馈，无确认应答、会话标识、额外心跳或分包，不承载不可丢失的离散事件。
+C接口只编解码，调用方校验CAN标识/总线并负责发送周期、序号及接收时效。
 
 ## 链路在线与业务时效
 
-两种板型各自持有静态 100 ms Daemon。`BoardTransport_Init()` 注册 CAN 回调及 Daemon，任一失败返回 false，Poll/Send 保持不可用。`BoardTransport_IsOnline()` 与 `BoardTransport_OfflineDurationMs()` 是薄只读诊断接口；Application 继续消费业务 Topic，不持有 Daemon。
+保持原有100ms静态Daemon诊断。按实际接收时间仍及时、Decode合法的帧先Feed，再按
+本类型独立序号判断是否Publish；合法重复帧可保持链路在线，但不能给业务数据续期。
+合法及时流中断超过100ms后，本类型可重建序号基准；连续合法重复流不重建。
+没有会话标识，不能宣称具备跨重启防重放能力。
 
-Poll 在 bus、ID、大小、接收时效与 Decode 全部通过后 Feed，再检查序号。合法及时的重复序号能维持链路 Online，但不 Publish Topic；没有新序号时 Topic 仍会 stale。RX 时间戳保留，用于拒绝延迟处理的旧帧、按实际接收时间 PublishAt 和判断合法数据流是否中断。StatusTask 100 Hz CheckAll 统一报告跃迁，无堆分配、离线恢复 callback 或整车安全策略。详见 [Daemon](../Daemon/README.md)。
+Topic保留实际接收时间。Input的Remote业务时效继续为50ms，Keyboard为100ms，
+底盘命令业务时效继续为100ms；这些不等同于链路Online。未知类型、错误版本/长度/保留位
+不发布对应业务消息。未新加超时、锁存、自动恢复或重试策略。
 
-硬件实测需抓取 `0x141` 和 `0x222` 帧确认约 10 ms 刷新；断开板间 CAN
-确认底盘超过 100 ms 时效门限后进入 `ZERO_FORCE`；单独重启云台板验证首帧恢复；
-注入单总线堵塞验证其他总线不受影响，并量测 1 kHz 控制任务执行时间。
+## 验证
 
-新增通信与队列不使用堆分配，也不创建新任务。`TransportTask.cpp` 实际承担
-USB 遥测任务，与板间 CAN 的 `BoardTransport_Poll()` 是两个独立入口。
-INS、Gimbal 和 Shoot 板内控制不经过此 Transport。扩展第三块板时新增对应
-构建预设、BoardConfig、固定 TransportConfig 绑定以及该消息的编解码和接收发布入口。
+检查C99独立编码及C++业务包装的固定字节、往返、正负值、序号回绕和错误帧；
+同一0x80连续到达两类报文后，两份Topic必须各保留正确数据与实际接收时间。
+本机只构建当前选定的上板配置；下板业务与真实总线收发需在对端接入后联调。
+`TransportTask.cpp`仍是USB遥测任务，板间轮询仍是ControlTask中的BoardTransport_Poll。
+
+上下板主机集成验证可执行`python3 tests/run_gimbal_link.py`，默认使用同级
+`2027_UL_Wheeled-Legged_Infantry_Chassis`，也可用`--lower <路径>`指定。
+该验证编译两端真实Transport、下板遥控适配、上板输入/RobotCmd/Gimbal与24字节视觉源码，
+硬件接口以桩替换；不能代替真实总线、电机与控制周期验收。
+
+## CH8许可下的CH7自瞄请求
+
+类型2状态bit1表示`autoaim_requested`，bit0保持`enabled`。
+下板只有遥控健康且CH8原始值>1400、CH7原始值>1400时才置位请求；关闭CH8同时撤销两者。
+状态0x18失能、0x19手动使能、0x1B使能并请求自瞄；其余字节及版本不变。
+旧上板会拒绝bit1置位的帧，两端必须同步更新`gimbal_link_protocol.c/.h`与业务结构。
+
+
+## 图传左键下发（类型3）
+
+上板CAN2→下板CAN3，标准标识0x81，版本1。字节0为本类型独立序号，
+字节1固定0x1C，字节2为0停止、1单次事件、2持续动作，字节3–7为0。
+GimbalLink_EncodeMouseCommand/DecodeMouseCommand提供独立C接口。
+BoardTransport_SendMouseCommand使用已有非阻塞发送队列，成功后递增序号。
+输入层在动作变化时立即提交，0/2每10ms更新，1仅一次；提交失败不补发单次事件。
+现有底盘命令仍用原周期槽，两类型不能共用仅按标识保存最新帧的槽。
+下板当前尚未接入类型3，需按交接文档更新后才能消费本业务。

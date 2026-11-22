@@ -9,6 +9,15 @@
 
 ## 协议解析与 UART 接入
 
+`referee_26.c` 另支持用户指定的 2024 附录 V1.7.0 中 `0x0304` 键鼠数据，
+固定载荷 12 字节，复用现有流式拼帧及 CRC（Cyclic Redundancy Check，循环冗余校验）。
+`RefereeReadKeyboardSnapshot()` 原子读取鼠标三轴、有符号原始值、左右键、
+键盘16位掩码、保留字段、本板实际接收毫秒时戳与本地更新序号；
+只有合法 `0x0304` 会更新该快照，其他图传或裁判数据不会延长键鼠数据的有效期。
+原始数据不在设备层换算云台角速度；Ctrl+S切换及输入仲裁应由Application处理。
+正式GimbalBoard由System_Init唯一绑定串口10；GimbalInput读取快照并处理Ctrl+S，
+同一串口启用ClientUI时继续共用现有Referee解析器，不重复注册回调。
+
 调用 `RefereeInit(UART_HandleTypeDef*)` 才会注册 `RefereeRxCallback()`；传入的 UART 需已具备 ReceiveToIdle RX DMA。BSP 回调参数是一段 DMA chunk，可能包含半帧、多帧或杂字节。`JudgeReadData()` 用 320 字节静态缓存跨 chunk 重组帧，验证帧头 CRC8 和整帧 CRC16，然后按 CmdID 复制到 `referee_info_t`。`RefereeReceiveData()` 也调用相同解析器。VTM 使用本目录的独立解析入口。
 
 已知固定长度命令要求声明长度、协议常量和目标结构大小完全一致；超长帧被拒绝，CRC 错帧逐字节重同步。解析状态由 UART 回调持有；`RefereeReceiveData()` 不应与 UART 中断并发调用。

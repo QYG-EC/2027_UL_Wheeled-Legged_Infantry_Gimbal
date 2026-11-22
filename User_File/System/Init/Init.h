@@ -27,6 +27,7 @@ typedef enum
     SYSTEM_INIT_FAILURE_BMI088 = 1U << 2,
     SYSTEM_INIT_FAILURE_W25Q64 = 1U << 3,
     SYSTEM_INIT_FAILURE_ADC1 = 1U << 4,
+    SYSTEM_INIT_FAILURE_VISION = 1U << 5,
 } Enum_System_Init_Failure;
 
 

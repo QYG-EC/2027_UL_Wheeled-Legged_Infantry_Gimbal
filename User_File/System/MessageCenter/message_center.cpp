@@ -3,7 +3,9 @@
 namespace MessageCenter
 {
 Topic<INS_State> INS_State_Topic;
+Topic<INS_State> Gimbal_INS_State_Topic;
 Topic<GimbalCmd> Gimbal_Command_Topic;
+Topic<GimbalRateInput> Remote_Gimbal_Input_Topic;
 Topic<ChassisCmd> Chassis_Command_Topic;
 Topic<ShootCmd> Shoot_Command_Topic;
 Topic<GimbalFeedback> Gimbal_Feedback_Topic;

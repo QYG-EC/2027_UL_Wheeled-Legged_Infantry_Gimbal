@@ -116,7 +116,7 @@ void RobotCmd_Update(void)
     const InputDecision decision = SourceArbitration_Resolve(InputState_Read());
     const bool source_changed = decision.source != Last_Input_Source;
     RobotCmd_SetInputArmed(decision.armed);
-    if (decision.armed) // 只有选中来源通过新鲜度、合法性和 Remote 安全许可才接受运动目标。
+    if (decision.armed) // 来源策略授予许可；上板键鼠许可独立于下板遥控。
     {
         if (source_changed) // 来源改变时立即刷新底盘，并丢弃前一来源积压的射击请求。
         {

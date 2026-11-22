@@ -12,7 +12,14 @@ struct InputDecision
     bool armed = false;
 };
 
-/** 固定优先级：Remote 安全许可 → 显式选中且新鲜的控制来源 → 可选 Vision 云台瞄准。 */
+/** 上板键鼠优先，显式请求且有有效视觉目标时覆盖绝对角；其他板型保留原有策略。 */
 InputDecision SourceArbitration_Resolve(const InputState &state);
+
+/**
+ * @brief 目标有效、未过期且不早于切换边界；供仲裁与界面共用。
+ * @param state 同一控制任务内的完整输入快照，包含当前毫秒时刻和配置时效。
+ * @return 两轴有限且目标通过切换边界与时效检查时为true，时效0表示关闭超时。
+ */
+bool SourceArbitration_VisionReady(const InputState& state);
 
 #endif

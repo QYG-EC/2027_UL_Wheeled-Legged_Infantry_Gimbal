@@ -200,7 +200,9 @@ Shoot 总开关或设备 ready。Push 成功和 Pop 成功只表示软件请求�
 
 | 通道 | 发布者 | 消费者 | 语义 |
 | --- | --- | --- | --- |
-| `INS_State_Topic` | `System_IMU_Publish_State` | Gimbal | 最新姿态与角速度 |
+| `INS_State_Topic` | `System_IMU_Publish_State` | 配置为板载源的Gimbal | 板载姿态与角速度 |
+| `Gimbal_INS_State_Topic` | `System_Gimbal_IMU_Update` | 正式上板Gimbal | 外置随动惯性姿态，保留串口接收时间 |
+| `Remote_Gimbal_Input_Topic` | `BoardTransport_Poll` | GimbalInput | 下板遥控使能与两轴目标角速度 |
 | `Gimbal_Command_Topic` | RobotCmd | Gimbal | 最新云台控制目标 |
 | `Chassis_Command_Topic` | 单板 RobotCmd；底盘板 Transport 接收入口 | Chassis | 最新底盘速度目标 |
 | `Shoot_Command_Topic` | RobotCmd | Shoot | 最新发射连续状态 |
@@ -388,3 +390,5 @@ Message Center 不负责：
 - [Shoot：持续状态与事件消费](../../Application/Shoot/README.md)
 - [Transport：板间时间戳与消息编码](../Transport/README.md)
 - [交互式架构图](../../../Assets/Architecture/H7_BSP.html)
+
+正式上板的RATE命令按1ms积分，不依赖Topic更新频率；反馈新增yaw_ready/pitch_ready，enabled只要求参与控制的轴均就绪。详见[Gimbal](../../Application/Gimbal/README.md)与[Input](../../Application/Input/README.md)。

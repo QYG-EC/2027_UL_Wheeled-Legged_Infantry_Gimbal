@@ -52,3 +52,20 @@ Thumbs.db
 /框架可靠性验证方案.md
 /框架修复清单.md
 /.workbuddy/
+
+# Pitch实验原始证据和本机调参文件（保留本地，不提交采集产物）
+/sysid/pitch/runs/
+/sysid/pitch/results/
+/sysid/pitch/K_latest.txt
+/sysid/pitch/K_latest.txt.tmp
+/sysid/pitch/**/__pycache__/
+
+/sysid/pitch/K_external_imu.txt
+/sysid/pitch/K_external_imu.txt.tmp
+
+# Yaw辨识原始证据与MATLAB自动保存
+/sysid/yaw/runs/
+/sysid/yaw/results/
+/sysid/yaw/K_latest.txt
+/sysid/yaw/**/__pycache__/
+*.asv

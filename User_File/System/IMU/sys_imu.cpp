@@ -14,6 +14,10 @@
 #include "message_center.h"
 #include "daemon.h"
 #include <cmath>
+#if H7_GIMBAL_RATE_INPUT
+#include "board_config.h"
+#include "hipnuc.h"
+#endif
 
 /* Private macros ------------------------------------------------------------*/
 
@@ -123,3 +127,56 @@ void System_IMU_Publish_State()
     ins_daemon.Feed();
     INS_State_Publisher.Publish(ins_state);
 }
+
+#if H7_GIMBAL_RATE_INPUT
+namespace
+{
+// 外置与板载姿态各有唯一发布者，沿用既有30ms诊断和云台10ms业务时效。
+Daemon gimbal_ins_daemon{30U};
+bool gimbal_ins_initialized;
+uint32_t gimbal_ins_sequence;
+}
+
+bool System_Gimbal_IMU_Init()
+{
+    auto* uart = BoardConfig_Get().gimbal_imu_uart;
+    if (uart == nullptr)
+    {
+        return false;
+    }
+    // CubeMX保留通用串口初值；板型在接收启动前覆盖为用户确认的921600。
+    uart->Init.BaudRate = 921600U;
+    if (HAL_RS485Ex_Init(uart, UART_DE_POLARITY_HIGH, 0U, 0U) != HAL_OK)
+    {
+        return false;
+    }
+    gimbal_ins_initialized = DaemonManager::Register(gimbal_ins_daemon) && Hipnuc_Init(uart);
+    return gimbal_ins_initialized;
+}
+
+void System_Gimbal_IMU_Update()
+{
+    Struct_Hipnuc_State raw{};
+    if (!gimbal_ins_initialized || !Hipnuc_ReadLatest(raw) || raw.sequence == gimbal_ins_sequence)
+    {
+        return;
+    }
+    gimbal_ins_sequence = raw.sequence;
+    INS_State state{};
+    state.roll_rad = raw.angle_rad[0];
+    state.pitch_rad = raw.angle_rad[1];
+    state.yaw_rad = raw.angle_rad[2];
+    state.gyro_x_rad_s = raw.gyro_rad_s[0];
+    state.gyro_y_rad_s = raw.gyro_rad_s[1];
+    state.gyro_z_rad_s = raw.gyro_rad_s[2];
+    // 与原有System_IMU_Publish_State保持相同的有效姿态发布条件。
+    if (!std::isfinite(state.roll_rad) || !std::isfinite(state.pitch_rad) ||
+        !std::isfinite(state.yaw_rad) || !std::isfinite(state.gyro_x_rad_s) ||
+        !std::isfinite(state.gyro_y_rad_s) || !std::isfinite(state.gyro_z_rad_s))
+    {
+        return;
+    }
+    gimbal_ins_daemon.Feed();
+    MessageCenter::Gimbal_INS_State_Topic.PublishAt(state, raw.received_us);
+}
+#endif

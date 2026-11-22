@@ -9,7 +9,6 @@ namespace ClientUIConfig
 constexpr uint16_t kRobotId = 0U;
 constexpr uint64_t kFeedbackMaxAgeUs = 100000U;
 constexpr uint64_t kSnapshotMaxAgeUs = 200000U;
-constexpr uint32_t kTargetMaxAgeMs = 100U;
 constexpr uint32_t kTargetBlinkPhaseMs = 250U;
 constexpr uint32_t kSendIntervalMs = 40U;
 constexpr uint32_t kDynamicReaddIntervalMs = 1000U;

@@ -54,3 +54,14 @@ InputState InputState_Read()
 {
     return state;
 }
+
+void InputState_EnableGimbalRateSources(uint32_t vision_max_age_ms)
+{
+    state.gimbal_rate_sources = true;
+    state.vision_max_age_ms = vision_max_age_ms;
+}
+
+void InputState_SetKeyboardEnabled(bool enabled)
+{
+    state.keyboard_enabled = enabled;
+}

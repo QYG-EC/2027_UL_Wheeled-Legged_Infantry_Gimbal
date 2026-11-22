@@ -5,7 +5,7 @@
  * 未直接移植热量限制和堵转阈值：这些参数依赖实车机构与裁判系统数据，当前
  * 工程尚不具备可靠标定条件。
  * 摩擦轮为 M3508/C620 直驱（gear_ratio=1），默认目标 25 rad/s。
- * 当前无摩擦轮达速、卡弹回退、热量/裁判互锁或完整 FEEDING 状态机。
+ * 正式上板只控制双摩擦轮，并提供双轮±容差达速许可给图传左键下发。
  */
 
 #include "Shoot.h"
@@ -36,7 +36,9 @@ struct ShootContext
     Class_DJIMotor_Group friction_group;
     Class_DJIMotor_Group loader_group;
     bool initialized = false;
+    bool loader_enabled = true;
     bool loader_was_ready = false; // 恢复首周期丢弃等待期间的事件，之后只接受新请求。
+    bool friction_ready = false;
     bool event_angle_active = false; // 表示正在保持事件累加的角目标，不表示弹丸已完成发射。
     float loader_angle_target_rad = 0.0f;
 };
@@ -63,14 +65,14 @@ static PID_InitTypeDef Shoot_MakePID(const ShootPidConfig& config)
 /**
  * @brief 根据总开关、摩擦轮模式、拨弹模式和事件选择本周期目标并提交电机组。
  * @note 调用前已取得本周期反馈快照；事件仅累加目标角，不确认弹丸发射完成。
- *       驱动负责闭环和离线输出保护，本函数没有摩擦轮达速、热量或卡弹互锁。
+ *       驱动负责闭环和离线输出保护；双轮达速在Shoot_Update中计算。
  */
 static void Shoot_ApplyCommand(void)
 {
     /* ShootMode 是总使能；关闭后摩擦轮和拨弹盘都停止主动输出。 */
     const bool enabled = ctx.command.shoot_mode == ShootMode::ON;
     (void) ctx.friction_group.RequestEnabled(enabled);
-    (void) ctx.loader_group.RequestEnabled(enabled);
+    if (ctx.loader_enabled) { (void) ctx.loader_group.RequestEnabled(enabled); }
     if (!enabled) // 总开关关闭，取消事件角度保持并禁止所有主动输出。
     {
         ctx.event_angle_active = false;
@@ -85,6 +87,9 @@ static void Shoot_ApplyCommand(void)
                                        : kShootConfig.default_friction_speed_rad_s;
     }
     ctx.friction_group.Control(friction_reference_rad_s, friction_reference_rad_s);
+
+    // 正式上板拨弹交给下板，仅拥有双摩擦轮。
+    if (!ctx.loader_enabled) { return; }
 
     float loader_speed_target_rad_s = 0.0f;
     switch (ctx.command.loader_mode)
@@ -138,8 +143,8 @@ static void Shoot_ApplyCommand(void)
 }
 
 /**
- * @brief 从控制前取得的三个设备快照生成应用反馈，角度 rad、速度 rad/s。
- * @note enabled 表示总开关 ON 且三台电机 ready，不表示摩擦轮达速或完成射击。
+ * @brief 从本板拥有的设备快照生成应用反馈，角度 rad、速度 rad/s。
+ * @note enabled 表示总开关 ON 且本板拥有的电机 ready；达速由Shoot_FrictionReady提供。
  *       快照早于本周期使能请求，状态变化可能在下一周期反映。
  */
 static void Shoot_UpdateFeedback(void)
@@ -152,14 +157,14 @@ static void Shoot_UpdateFeedback(void)
     ctx.feedback.loader_speed_rad_s = ctx.loader_snapshot.output_speed;
     ctx.feedback.enabled = ctx.command.shoot_mode == ShootMode::ON &&
                            ctx.friction_left_snapshot.ready &&
-                           ctx.friction_right_snapshot.ready && ctx.loader_snapshot.ready;
+                           ctx.friction_right_snapshot.ready && (!ctx.loader_enabled || ctx.loader_snapshot.ready);
     ctx.feedback.online = ctx.friction_left_snapshot.online &&
                           ctx.friction_right_snapshot.online &&
-                          ctx.loader_snapshot.online;
+                          (!ctx.loader_enabled || ctx.loader_snapshot.online);
 }
 
 /**
- * @brief 清空应用消息状态，注册摩擦轮和拨弹盘并绑定各自的 DJI 发送组。
+ * @brief 清空应用消息状态，注册双摩擦轮；非正式上板同时注册拨弹盘。
  * @return 全部电机注册与发送组绑定成功返回 true。
  * @note 由 ControlTask 启动时调用一次；总线归 BoardConfig，机构参数归 Shoot_Config。
  */
@@ -178,7 +183,8 @@ bool Shoot_Init(void)
     // 速度环输入为 rad/s；增益无可信实车标定依据，启用前需重新整定。
     friction_config.speed_pid = Shoot_MakePID(kShootConfig.friction_speed_pid);
 
-    friction_config.can_id = kShootConfig.friction_left_id;
+    ctx.loader_enabled = BoardConfig_Get().gimbal_keyboard_uart == nullptr;
+    friction_config.can_id = ctx.loader_enabled ? kShootConfig.friction_left_id : kShootConfig.gimbal_friction_left_id;
     const bool left_initialized = ctx.friction_left.Init(friction_config);
     friction_config.can_id = kShootConfig.friction_right_id;
     friction_config.reverse = true; // 镜像安装：两侧使用同号逻辑速度，右侧由驱动反向。
@@ -196,17 +202,18 @@ bool Shoot_Init(void)
     loader_config.speed_pid = Shoot_MakePID(kShootConfig.loader_speed_pid);
     // 角度环输出是 rad/s；原 360 deg/s 限幅转换为 2π rad/s。
     loader_config.angle_pid = Shoot_MakePID(kShootConfig.loader_angle_pid);
-    const bool loader_initialized = ctx.loader.Init(loader_config);
+    const bool loader_initialized = !ctx.loader_enabled || ctx.loader.Init(loader_config);
 
     ctx.initialized = left_initialized && right_initialized && loader_initialized &&
                       ctx.friction_group.Init(&ctx.friction_left, &ctx.friction_right) &&
-                      ctx.loader_group.Init(&ctx.loader);
+                      (!ctx.loader_enabled || ctx.loader_group.Init(&ctx.loader));
     if (ctx.initialized) // 全部设备和发送组绑定成功后，建立禁止输出的初始请求。
     {
         (void) ctx.friction_group.RequestEnabled(false);
-        (void) ctx.loader_group.RequestEnabled(false);
+        if (ctx.loader_enabled) { (void) ctx.loader_group.RequestEnabled(false); }
     }
     ctx.loader_was_ready = false;
+    ctx.friction_ready = false;
     ctx.event_angle_active = false;
     ctx.loader_angle_target_rad = 0.0f;
     return ctx.initialized;
@@ -229,9 +236,9 @@ void Shoot_Update(void)
     {
         ctx.friction_left_snapshot = ctx.friction_left.GetMotionSnapshot();
         ctx.friction_right_snapshot = ctx.friction_right.GetMotionSnapshot();
-        ctx.loader_snapshot = ctx.loader.GetMotionSnapshot();
+        if (ctx.loader_enabled) { ctx.loader_snapshot = ctx.loader.GetMotionSnapshot(); }
     }
-    const bool loader_ready = ctx.initialized && ctx.command.shoot_mode == ShootMode::ON &&
+    const bool loader_ready = ctx.initialized && ctx.loader_enabled && ctx.command.shoot_mode == ShootMode::ON &&
                               ctx.loader_snapshot.ready;
     if (!loader_ready || !ctx.loader_was_ready)
     {
@@ -252,6 +259,15 @@ void Shoot_Update(void)
     {
         Shoot_ApplyCommand();
         Shoot_UpdateFeedback();
+        const float target = ctx.command.friction_speed_rad_s > 0.0f
+                                 ? ctx.command.friction_speed_rad_s : kShootConfig.default_friction_speed_rad_s;
+        // 同号逻辑速度比较同时约束方向与达速，反向反馈不能获得许可。
+        const float tolerance = target * kShootConfig.friction_ready_tolerance_ratio;
+        ctx.friction_ready = ctx.command.shoot_mode == ShootMode::ON &&
+                             ctx.command.friction_mode == FrictionMode::ON &&
+                             ctx.friction_left_snapshot.ready && ctx.friction_right_snapshot.ready &&
+                             std::fabs(ctx.friction_left_snapshot.output_speed - target) <= tolerance &&
+                             std::fabs(ctx.friction_right_snapshot.output_speed - target) <= tolerance;
     }
 
     /* 控制按 1 kHz 更新，应用层反馈降频到 100 Hz。 */
@@ -261,4 +277,9 @@ void Shoot_Update(void)
         ctx.feedback_divider = 0U;
         ctx.feedback_publisher.Publish(ctx.feedback);
     }
+}
+
+bool Shoot_FrictionReady(void)
+{
+    return ctx.initialized && ctx.friction_ready;
 }
