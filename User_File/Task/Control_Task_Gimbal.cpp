@@ -47,6 +47,7 @@ extern "C" void Control_Task(void *)
         osThreadFlagsWait(0x0001, osFlagsWaitAny, osWaitForever);
         BoardTransport_Poll();
         System_Gimbal_IMU_Update();
+        (void) BoardTransport_SendGimbalYawState();
         GimbalInput_Update();
         RobotCmd_Update();
         Struct_Gimbal_Tuning_Request tuning_request{};

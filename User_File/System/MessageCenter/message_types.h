@@ -100,6 +100,15 @@ struct ShootCmd
     LoaderMode loader_mode = LoaderMode::STOP;
 };
 
+/** 外置IMU（Inertial Measurement Unit，惯性测量单元）Yaw，左转为正。
+ * 接收端Topic时间戳是本板CAN收帧时间，不是远端传感器采样时间。
+ */
+struct GimbalYawState
+{
+    float yaw_rad = 0.0f;         ///< 单圈角度，rad，[-pi, pi]。
+    float yaw_speed_rad_s = 0.0f; ///< 惯性Z轴角速度，rad/s，不是电机速度。
+};
+
 /** 姿态采用配置的惯性轴及符号；enabled表示功能获许可且参与控制的轴均ready。
  * gyro 轴由云台配置选择；INS 无效时姿态/速度清零，调用者须检查 ins_valid。
  */

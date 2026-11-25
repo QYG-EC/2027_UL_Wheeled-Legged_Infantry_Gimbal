@@ -392,3 +392,10 @@ Message Center 不负责：
 - [交互式架构图](../../../Assets/Architecture/H7_BSP.html)
 
 正式上板的RATE命令按1ms积分，不依赖Topic更新频率；反馈新增yaw_ready/pitch_ready，enabled只要求参与控制的轴均就绪。详见[Gimbal](../../Application/Gimbal/README.md)与[Input](../../Application/Input/README.md)。
+
+## 底盘跟随惯性数据
+
+新增`GimbalYawState`与唯一静态`Gimbal_Yaw_State_Topic`，由下板Transport接收上板0x82后发布。
+字段为`yaw_rad`（单圈rad）及`yaw_speed_rad_s`（惯性Z轴rad/s），左转为正；不是电机速度。
+时间戳为下板实际收帧时间，无新帧时保留旧快照及旧时间；本次未接入底盘跟随算法。
+线上字段及有效性约定见[Transport协议表](../Transport/README.md#云台惯性yaw下发0x82)。

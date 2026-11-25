@@ -174,3 +174,52 @@ bool GimbalLink_DecodeMouseCommand(const uint8_t* bytes, uint32_t size, uint8_t*
     *sequence = bytes[0];
     return true;
 }
+
+// 按位复制浮点表示，再显式排列字节，避免对接收缓冲进行未对齐访问。
+static void EncodeFloat(float value, uint8_t* bytes)
+{
+    uint32_t bits;
+    memcpy(&bits, &value, sizeof(bits));
+    for (uint8_t index = 0U; index < 4U; ++index)
+    {
+        bytes[index] = (uint8_t) (bits >> (8U * index));
+    }
+}
+
+static float DecodeFloat(const uint8_t* bytes)
+{
+    uint32_t bits = 0U;
+    for (uint8_t index = 0U; index < 4U; ++index)
+    {
+        bits |= (uint32_t) bytes[index] << (8U * index);
+    }
+    float value;
+    memcpy(&value, &bits, sizeof(value));
+    return value;
+}
+
+bool GimbalLink_EncodeYawState(const GimbalLink_YawState* state, uint8_t bytes[GIMBAL_LINK_PAYLOAD_SIZE])
+{
+    if (state == NULL || bytes == NULL || !isfinite(state->yaw_rad) || !isfinite(state->yaw_speed_rad_s))
+    {
+        return false;
+    }
+    EncodeFloat(state->yaw_rad, bytes);
+    EncodeFloat(state->yaw_speed_rad_s, bytes + 4U);
+    return true;
+}
+
+bool GimbalLink_DecodeYawState(const uint8_t* bytes, uint32_t size, GimbalLink_YawState* state)
+{
+    if (bytes == NULL || state == NULL || size != GIMBAL_LINK_PAYLOAD_SIZE)
+    {
+        return false;
+    }
+    const GimbalLink_YawState decoded = {DecodeFloat(bytes), DecodeFloat(bytes + 4U)};
+    if (!isfinite(decoded.yaw_rad) || !isfinite(decoded.yaw_speed_rad_s))
+    {
+        return false;
+    }
+    *state = decoded;
+    return true;
+}

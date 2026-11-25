@@ -49,6 +49,9 @@ referee_keyboard_snapshot_t keyboard;
 using Receiver = void (*)(FDCAN_HandleTypeDef*, uint32_t, uint8_t*, uint32_t, void*);
 Receiver upper_rx;
 Receiver lower_rx;
+Receiver lower_yaw_rx;
+std::vector<Struct_CAN_Tx_Msg> periodic;
+bool periodic_ok = true;
 UART_Callback vision_rx;
 USB_Callback tuning_rx;
 std::vector<uint8_t> usb_transmitted;
@@ -97,9 +100,12 @@ uint8_t UART_Transmit_Nonblocking(UART_HandleTypeDef*, uint8_t* bytes, uint16_t 
         transmitted.assign(bytes, bytes + size);
     return transmit_status;
 }
-bool BSP_CAN_RegisterCallback(uint32_t, FDCAN_HandleTypeDef* bus, Receiver receive, void*)
+bool BSP_CAN_RegisterCallback(uint32_t id, FDCAN_HandleTypeDef* bus, Receiver receive, void*)
 {
-    (bus == &hfdcan2 ? upper_rx : lower_rx) = receive;
+    if (bus == &hfdcan3 && id == GIMBAL_LINK_YAW_STATE_ID)
+        lower_yaw_rx = receive;
+    else
+        (bus == &hfdcan2 ? upper_rx : lower_rx) = receive;
     return true;
 }
 bool CAN_Tx_Submit(Struct_CAN_Tx_Msg* frame)
@@ -108,9 +114,11 @@ bool CAN_Tx_Submit(Struct_CAN_Tx_Msg* frame)
         queue.push_back(*frame);
     return submit_ok;
 }
-bool CAN_Tx_Perform(Struct_CAN_Tx_Msg*)
+bool CAN_Tx_Perform(Struct_CAN_Tx_Msg* frame)
 {
-    return true;
+    if (periodic_ok)
+        periodic.push_back(*frame);
+    return periodic_ok;
 }
 extern "C" bool SBUS_Init(UART_HandleTypeDef*)
 {
@@ -1096,12 +1104,109 @@ void TestMouseAndFriction()
     std::cout << "PASS mouse axes, F friction, dual ready boundaries, click/hold, pause/resume, autoaim and frame expiry\n";
 }
 
+void TestYawDownlink()
+{
+    uint8_t bytes[8]{};
+    const GimbalLink_YawState source{1.0f, -2.5f};
+    const uint8_t expected[8]{0, 0, 0x80, 0x3f, 0, 0, 0x20, 0xc0};
+    assert(GimbalLink_EncodeYawState(&source, bytes));
+    assert(std::memcmp(bytes, expected, 8) == 0);
+    GimbalLink_YawState decoded{};
+    assert(GimbalLink_DecodeYawState(bytes, 8, &decoded));
+    assert(decoded.yaw_rad == 1 && decoded.yaw_speed_rad_s == -2.5f);
+    for (uint32_t length : {0U, 7U, 9U})
+        assert(!GimbalLink_DecodeYawState(bytes, length, &decoded));
+    assert(!GimbalLink_DecodeYawState(nullptr, 8, &decoded));
+    assert(!GimbalLink_DecodeYawState(bytes, 8, nullptr));
+    assert(!GimbalLink_EncodeYawState(nullptr, bytes));
+    assert(!GimbalLink_EncodeYawState(&source, nullptr));
+    for (float invalid : {std::numeric_limits<float>::infinity(),
+                          -std::numeric_limits<float>::infinity(),
+                          std::numeric_limits<float>::quiet_NaN()})
+    {
+        for (unsigned field = 0; field < 2; ++field)
+        {
+            GimbalLink_YawState bad = source;
+            (field == 0 ? bad.yaw_rad : bad.yaw_speed_rad_s) = invalid;
+            assert(!GimbalLink_EncodeYawState(&bad, bytes));
+            assert(std::memcmp(bytes, expected, 8) == 0);
+            std::memcpy(bytes + 4 * field, &invalid, 4);
+            assert(!GimbalLink_DecodeYawState(bytes, 8, &decoded));
+            assert(decoded.yaw_rad == 1 && decoded.yaw_speed_rad_s == -2.5f);
+            std::memcpy(bytes, expected, 8);
+        }
+    }
+    assert(!BoardTransport_SendGimbalYawState()); // 尚未初始化。
+    assert(BoardTransport_Init() && Lower_BoardTransport_Init());
+    assert(lower_rx && lower_yaw_rx);
+    assert(!BoardTransport_SendGimbalYawState()); // 外置姿态尚未发布。
+    INS_State onboard{};
+    onboard.yaw_rad = 2;
+    onboard.gyro_z_rad_s = 99;
+    MessageCenter::INS_State_Topic.Publish(onboard);
+    assert(!BoardTransport_SendGimbalYawState()); // 板载姿态不能替代外置姿态。
+    INS_State external{};
+    external.yaw_rad = 7.0f;
+    external.gyro_z_rad_s = -2.5f;
+    MessageCenter::Gimbal_INS_State_Topic.Publish(external);
+    const uint64_t sampled_us = clock_us;
+    periodic.clear();
+    queue.clear();
+    for (unsigned tick = 0; tick < 21; ++tick)
+    {
+        clock_us = sampled_us + tick * 1000U;
+        assert(BoardTransport_SendGimbalYawState());
+    }
+    assert(periodic.size() == 21 && queue.empty()); // 包括恰好20ms，走最新值槽。
+    auto frame = periodic.back();
+    assert(frame.id == 0x82 && frame.len == 8 && frame.hfdcan == &hfdcan2);
+    assert(GimbalLink_DecodeYawState(frame.data, 8, &decoded));
+    assert(std::fabs(decoded.yaw_rad - std::remainder(7.0f, 6.283185307179586f)) < 1e-6f);
+    assert(decoded.yaw_speed_rad_s == -2.5f);
+    ++clock_us;
+    assert(!BoardTransport_SendGimbalYawState() && periodic.size() == 21);
+    external.yaw_rad = -7;
+    MessageCenter::Gimbal_INS_State_Topic.Publish(external);
+    periodic_ok = false;
+    assert(!BoardTransport_SendGimbalYawState() && periodic.size() == 21);
+    periodic_ok = true;
+    assert(BoardTransport_SendGimbalYawState());
+    frame = periodic.back();
+    ChassisCmd command{};
+    command.mode = ChassisMode::NO_FOLLOW;
+    uint8_t command_bytes[8]{};
+    assert(TransportProtocol::EncodeChassisCmd(command, 1, command_bytes));
+    const uint64_t received_us = ++clock_us;
+    lower_rx(&hfdcan3, 0x81, command_bytes, 8, nullptr);
+    lower_yaw_rx(&hfdcan3, 0x82, frame.data, 8, nullptr);
+    clock_us += 1000;
+    Lower_BoardTransport_Poll();
+    auto snapshot = MessageCenter::Gimbal_Yaw_State_Topic.ReadWithMeta();
+    assert(snapshot.valid && snapshot.timestamp_us == received_us);
+    assert(std::fabs(snapshot.data.yaw_rad - std::remainder(-7.0f, 6.283185307179586f)) < 1e-6f);
+    assert(snapshot.data.yaw_speed_rad_s == -2.5f);
+    assert(MessageCenter::Chassis_Command_Topic.ReadWithMeta().timestamp_us == received_us);
+    lower_yaw_rx(&hfdcan2, 0x82, frame.data, 8, nullptr);
+    lower_yaw_rx(&hfdcan3, 0x81, frame.data, 8, nullptr);
+    lower_yaw_rx(&hfdcan3, 0x82, frame.data, 7, nullptr);
+    Lower_BoardTransport_Poll();
+    assert(MessageCenter::Gimbal_Yaw_State_Topic.Sequence() == snapshot.sequence);
+    float invalid = std::numeric_limits<float>::quiet_NaN();
+    std::memcpy(frame.data, &invalid, 4);
+    lower_yaw_rx(&hfdcan3, 0x82, frame.data, 8, nullptr);
+    Lower_BoardTransport_Poll();
+    assert(MessageCenter::Gimbal_Yaw_State_Topic.Sequence() == snapshot.sequence);
+    assert(MessageCenter::Gimbal_Yaw_State_Topic.Timestamp() == received_us);
+    std::cout << "PASS 0x82 float fixtures, invalid frames, external gyro, 1ms updates, 20ms boundary and isolated receive timestamps\n";
+}
+
 int main()
 {
     TestVision();
     float initial[10]{};
     assert(!Gimbal_GetTuningParameters(initial));
     assert(!Gimbal_SetTuningParameters(initial));
+    TestYawDownlink();
     TestLinkAndControl();
     TestFeedbackIsolation();
     TestEnableSwitch();

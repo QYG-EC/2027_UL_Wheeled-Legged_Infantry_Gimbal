@@ -232,7 +232,10 @@ for rel in ["User_File/System/Transport/transport_chassis.cpp", "User_File/Appli
     compile_source(lower / rel, [f"-I{lower / 'User_File/System/Transport'}", *renames])
 
 codec = ROOT / "User_File/System/Transport/gimbal_link_protocol.c"
-# Upper adds type 3; lower remains intentionally unchanged in this task.
+# Existing message types can differ; the new 0x82 codec must match exactly.
+upper_codec = codec.read_text().split("// 按位复制浮点表示", 1)[1]
+lower_codec = (lower / "User_File/System/Transport/gimbal_link_protocol.c").read_text().split("// 按位复制浮点表示", 1)[1]
+assert upper_codec == lower_codec, "0x82 codecs differ"
 obj = build / "codec.o"
 subprocess.run(["gcc", "-std=c99", "-Wall", "-Wextra", "-Werror", "-fsanitize=undefined,address", "-c", str(codec), "-o", str(obj)], check=True)
 exe = build / "gimbal-link-test"

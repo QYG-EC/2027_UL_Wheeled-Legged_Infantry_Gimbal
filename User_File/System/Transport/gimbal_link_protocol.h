@@ -6,6 +6,7 @@
 
 #define GIMBAL_LINK_UPLINK_ID 0x80U
 #define GIMBAL_LINK_DOWNLINK_ID 0x81U
+#define GIMBAL_LINK_YAW_STATE_ID 0x82U
 #define GIMBAL_LINK_VERSION 1U
 #define GIMBAL_LINK_PAYLOAD_SIZE 8U
 
@@ -45,10 +46,33 @@ typedef struct
     bool online;
 } GimbalLink_ChassisFeedback;
 
+/** 外置惯性Yaw：单圈角度rad，Z轴角速度rad/s；左转为正。 */
+typedef struct
+{
+    float yaw_rad;
+    float yaw_speed_rad_s;
+} GimbalLink_YawState;
+
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
+    /**
+     * @brief 编码0x82惯性Yaw，两字段为小端32位浮点，单位rad和rad/s。
+     * @param state 同一惯性快照的角度与角速度，角度由调用者归一化到[-pi, pi]。
+     * @param bytes 8字节输出；空指针或非有限数返回false且不修改输出。
+     * @return 是否完成编码，不代表已发送。
+     */
+    bool GimbalLink_EncodeYawState(const GimbalLink_YawState* state, uint8_t bytes[GIMBAL_LINK_PAYLOAD_SIZE]);
+    /**
+     * @brief 解码0x82惯性Yaw；调用者核对总线、标识并保存实际接收时间。
+     * @param bytes 小端32位浮点载荷。
+     * @param size 必须为8字节。
+     * @param state 输出角度rad、角速度rad/s；失败保持原值。
+     * @return 长度、指针及两字段有限性是否有效。
+     */
+    bool GimbalLink_DecodeYawState(const uint8_t* bytes, uint32_t size, GimbalLink_YawState* state);
 
     /** @brief 编码上板左键动作，command为0停止、1单次、2持续。 */
     bool GimbalLink_EncodeMouseCommand(uint8_t command, uint8_t sequence, uint8_t bytes[GIMBAL_LINK_PAYLOAD_SIZE]);

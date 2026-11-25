@@ -1,5 +1,7 @@
 #include "board_transport.h"
 
+#include <cmath>
+
 #include "bsp_can.h"
 #include "daemon.h"
 #include "message_center.h"
@@ -217,4 +219,20 @@ bool BoardTransport_SendMouseCommand(uint8_t command)
     }
     ++sequence;
     return true;
+}
+
+bool BoardTransport_SendGimbalYawState(void)
+{
+    INS_State ins{};
+    if (!initialized || !MessageCenter::Gimbal_INS_State_Topic.ReadFresh(ins, 20000U))
+    {
+        return false;
+    }
+    const GimbalLink_YawState state{std::remainder(ins.yaw_rad, 6.283185307179586f), ins.gyro_z_rad_s};
+    Struct_CAN_Tx_Msg message{};
+    message.hfdcan = TransportConfig_Bus();
+    message.id = TransportConfig::kGimbalYawStateCanId;
+    message.len = TransportProtocol::kPayloadSize;
+    // 独立标识只保留最新版本，1kHz连续姿态不占用鼠标动作的逐帧发送队列。
+    return GimbalLink_EncodeYawState(&state, message.data) && CAN_Tx_Perform(&message);
 }

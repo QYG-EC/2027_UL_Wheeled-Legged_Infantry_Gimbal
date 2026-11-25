@@ -3,6 +3,7 @@
 namespace MessageCenter
 {
 Topic<INS_State> INS_State_Topic;
+Topic<GimbalYawState> Gimbal_Yaw_State_Topic;
 Topic<INS_State> Gimbal_INS_State_Topic;
 Topic<GimbalCmd> Gimbal_Command_Topic;
 Topic<GimbalRateInput> Remote_Gimbal_Input_Topic;

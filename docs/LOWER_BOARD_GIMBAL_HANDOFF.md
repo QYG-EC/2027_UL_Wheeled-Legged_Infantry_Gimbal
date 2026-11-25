@@ -49,7 +49,7 @@ CAN（Controller Area Network，控制器局域网）使用Classic CAN标准数�
 | 方向 | 外设 | 标准标识 |
 | --- | --- | --- |
 | 下板→上板 | 下板CAN3接上板CAN2 | **0x80** |
-| 上板→下板 | 上板CAN2接下板CAN3 | **0x81** |
+| 上板→下板 | 上板CAN2接下板CAN3 | **0x81**（原业务）、**0x82**（惯性Yaw） |
 
 这是板间链路标识，不改其他总线的电机标识。旧0x141/0x222/0x223已由本协议替代；0x50/0x51不是当前协议。上下板必须同时采用新格式。
 
@@ -167,3 +167,11 @@ bool Lower_SendChassisFeedback(const GimbalLink_ChassisFeedback* feedback)
 同类型独立跟踪序号，重复帧不重复执行单次动作。
 既有下板收帧缓存只处理底盘命令，需为类型3单独分发和保存，不能覆盖类型0。
 下板须沿用自身既有过期/掉线处理，不能永久锁存旧的2。上板提交成功仅表示入队。
+
+## 2026-11-25：底盘跟随惯性数据已接入
+
+两端`feat/gimbal-imu-downlink`新增独立0x82：每1ms由上板CAN2向下板CAN3提交外置惯性Yaw，
+下板已接收并发布`Gimbal_Yaw_State_Topic`，尚未接入底盘跟随控制器。
+该帧不使用本文旧0x80/0x81的版本/类型/序号头。
+完整字节、单位、示例、20ms源时效及接收时间语义见
+[0x82协议表](../User_File/System/Transport/README.md#云台惯性yaw下发0x82)。

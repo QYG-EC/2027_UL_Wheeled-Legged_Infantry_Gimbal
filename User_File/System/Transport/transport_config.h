@@ -7,6 +7,7 @@
 namespace TransportConfig
 {
 // 方向决定CAN标识，数据域类型区分同方向消息；板间总线由板型固定绑定。
+constexpr uint16_t kGimbalYawStateCanId = GIMBAL_LINK_YAW_STATE_ID;
 constexpr uint16_t kUplinkCanId = GIMBAL_LINK_UPLINK_ID;
 constexpr uint16_t kDownlinkCanId = GIMBAL_LINK_DOWNLINK_ID;
 constexpr uint16_t kChassisCmdCanId = kDownlinkCanId;

@@ -8,6 +8,7 @@
 namespace MessageCenter
 {
 extern Topic<INS_State> INS_State_Topic;
+extern Topic<GimbalYawState> Gimbal_Yaw_State_Topic;
 extern Topic<INS_State> Gimbal_INS_State_Topic; ///< 外置随动惯性单元，独立于板载姿态发布者。
 extern Topic<GimbalCmd> Gimbal_Command_Topic;
 extern Topic<GimbalRateInput> Remote_Gimbal_Input_Topic;
